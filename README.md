@@ -8,3 +8,4 @@ Aik - Tegeleb uudiste edastamisega programmile, et AI saaks neid lugeda.
 Kalju - Tegeleb veebiliidesega.
 
 Trello - https://trello.com/b/gRVTk453/stockgame
+Figma - https://www.figma.com/design/OusqViQAhmQqubC6CD0Jm5/Untitled?node-id=0-1&t=rdDauBkZlLYWVuRf-1
