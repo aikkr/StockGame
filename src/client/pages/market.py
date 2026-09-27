@@ -2,18 +2,14 @@
 
 from nicegui import ui
 
-from api import MarketApiError, get_market, submit_order
+from api import MarketApiError, get_market, get_news, submit_order
 from charts import stock_chart
 from components import change_badge, header, metric, plot
+from server.sessions import load_user, save_progress
 
 
 async def market_page():
-    """Fetch a market snapshot and render the interactive trading screen.
-
-    Dependencies: the server's /api/market and /api/orders contracts.
-    Side effects: renders UI and submits user-requested simulated orders.
-    Failure impact: renders a recoverable error panel if market loading fails.
-    """
+    user, saved = load_user()
     try:
         market = await get_market()
     except MarketApiError:
@@ -32,11 +28,44 @@ async def market_page():
 
     account = market['account']
     positions = market['positions']
-    state = dict(stock=stocks[0], period='1W', search='', side='BUY', quantity=50)
-    watchlist = set()
+    stock_by_symbol = {stock['symbol']: stock for stock in stocks}
+    selected = stock_by_symbol.get(saved.get('selected_symbol'), stocks[0])
+    period = saved.get('period') if saved.get('period') in {'1D', '1W', '1M', '1Y'} else '1W'
+    side = saved.get('side') if saved.get('side') in {'BUY', 'SELL'} else 'BUY'
+    quantity = saved.get('quantity', 50)
+    if isinstance(quantity, bool) or not isinstance(quantity, (int, float)) or quantity <= 0:
+        quantity = 50
+    state = dict(stock=selected, period=period, search='', side=side, quantity=quantity)
+    saved_watchlist = saved.get('watchlist', [])
+    if not isinstance(saved_watchlist, list):
+        saved_watchlist = []
+    watchlist = {
+        symbol for symbol in saved_watchlist
+        if isinstance(symbol, str) and symbol in stock_by_symbol
+    }
+    news_items = list(market['news'])
+
+    def persist_progress():
+        if user['id'] == 0:
+            return
+        save_progress(user['id'], {
+            'selected_symbol': state['stock']['symbol'],
+            'period': state['period'],
+            'side': state['side'],
+            'quantity': state['quantity'],
+            'watchlist': sorted(watchlist),
+        })
+
+    async def refresh_news():
+        try:
+            latest = await get_news()
+        except MarketApiError:
+            return
+        if latest != news_items:
+            news_items[:] = latest
+            news_panel.refresh()
 
     def select_stock(stock):
-        """Select a stock and refresh every component that depends on it."""
         state['stock'] = stock
         stock_list.refresh()
         chart_panel.refresh()
@@ -44,13 +73,11 @@ async def market_page():
         position_panel.refresh()
 
     def filter_stocks(value):
-        """Update the single-list text filter."""
         state['search'] = value or ''
         stock_list.refresh()
 
     @ui.refreshable
     def stock_list():
-        """Render all API-provided stocks matching the search text."""
         search_text = state['search'].lower()
         matches = [
             stock for stock in stocks
@@ -70,13 +97,11 @@ async def market_page():
                 ui.label('No matching assets.').classes('muted empty-state')
 
     def set_period(period):
-        """Select a chart period and refresh the chart."""
         state['period'] = period
         chart_panel.refresh()
 
     @ui.refreshable
     def chart_panel():
-        """Render the selected quote and its API-provided price history."""
         stock = state['stock']
         with ui.column().classes('panel chart-panel'):
             with ui.row().classes('chart-heading'):
@@ -100,12 +125,10 @@ async def market_page():
             plot(stock_chart(stock, state['period']), 'market-chart')
 
     def set_side(side):
-        """Select an order side and refresh its panel."""
         state['side'] = side
         order_panel.refresh()
 
     def toggle_watchlist():
-        """Add or remove the selected symbol from this session's watchlist."""
         symbol = state['stock']['symbol']
         if symbol in watchlist:
             watchlist.remove(symbol)
@@ -115,7 +138,6 @@ async def market_page():
         order_panel.refresh()
 
     async def execute():
-        """Validate a quantity locally and submit the order to the server API."""
         quantity = state['quantity']
         if quantity is None or quantity <= 0 or quantity != int(quantity):
             ui.notify('Enter a positive whole number of shares.', type='warning')
@@ -128,7 +150,6 @@ async def market_page():
 
     @ui.refreshable
     def order_panel():
-        """Render order controls using server-provided quote and account data."""
         stock = state['stock']
         available_cash = account['available_cash']
         handling_fee = account['handling_fee']
@@ -175,7 +196,6 @@ async def market_page():
 
     @ui.refreshable
     def watch_panel():
-        """Render only stocks the user added during the current session."""
         with ui.column().classes('panel watch-panel'):
             with ui.row().classes('spread'):
                 ui.label('WATCHLIST').classes('section-title')
@@ -197,7 +217,6 @@ async def market_page():
 
     @ui.refreshable
     def position_panel():
-        """Render the API-provided position for the selected symbol."""
         symbol = state['stock']['symbol']
         position = positions.get(symbol)
         with ui.column().classes('panel position-panel'):
@@ -226,6 +245,19 @@ async def market_page():
                     ]:
                         metric(title, value)
 
+    @ui.refreshable
+    def news_panel():
+        with ui.column().classes('panel news-panel'):
+            ui.label('Market Wire (Live)').classes('section-title')
+            for article in news_items:
+                with ui.column().classes('news-item'):
+                    with ui.row().classes('news-meta'):
+                        ui.label(article['symbol']).classes('yellow mono')
+                        ui.label('• ' + article['age']).classes('muted')
+                    ui.label(article['headline'])
+            if not news_items:
+                ui.label('Waiting for the first market update...').classes('muted empty-state')
+
     header(
         active=True,
         portfolio_value=account['portfolio_value'],
@@ -233,14 +265,7 @@ async def market_page():
     )
     with ui.element('main').classes('market-layout'):
         with ui.column().classes('left-column'):
-            with ui.column().classes('panel news-panel'):
-                ui.label('Market Wire (Live)').classes('section-title')
-                for article in market['news']:
-                    with ui.column().classes('news-item'):
-                        with ui.row().classes('news-meta'):
-                            ui.label(article['symbol']).classes('yellow mono')
-                            ui.label('• ' + article['age']).classes('muted')
-                        ui.label(article['headline'])
+            news_panel()
             with ui.column().classes('panel stocks-panel'):
                 ui.label('Stocks').classes('section-title')
                 search = ui.input(
@@ -255,3 +280,6 @@ async def market_page():
         with ui.column().classes('right-column'):
             order_panel()
             watch_panel()
+
+    ui.timer(10, refresh_news)
+    ui.timer(20, persist_progress)

@@ -12,10 +12,18 @@ class MarketApiError(RuntimeError):
 
 
 async def get_market() -> dict:
+    """Load the current server-owned market snapshot."""
     return await _request('GET', '/api/market')
 
 
+async def get_news() -> list[dict]:
+    """Load the latest news feed without refreshing the page."""
+    result = await _request('GET', '/api/news')
+    return result['news']
+
+
 async def submit_order(symbol: str, side: str, quantity: int) -> str:
+    """Submit a validated simulated order to the local server."""
     result = await _request('POST', '/api/orders', json={
         'symbol': symbol,
         'side': side,

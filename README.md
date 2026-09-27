@@ -14,3 +14,13 @@ Stocks - Microsoft, Micron, Tesla, McDonalds, SpaceX, AstraZeneca, Pfiser, Sella
 
 <img width="1205" height="688" alt="Kuvatõmmis 2026-09-17 092231" src="https://github.com/user-attachments/assets/0f46ca51-1bdb-4954-83df-da0b0a08c5bd" />
 <img width="1206" height="683" alt="Kuvatõmmis 2026-09-17 092248" src="https://github.com/user-attachments/assets/75e6db7b-8d8b-4549-ac17-fc65dbc61f86" />
+
+## Running locally
+
+The server uses Python's built-in SQLite support. User sessions and saves are stored in
+`src/stockgame.db` by default.
+
+1. Install the Python packages with `pip install -r requirements.txt`.
+2. Copy `.env.example` to `.env` and replace `STOCKGAME_STORAGE_SECRET` with a
+   long random value. This keeps browser sessions valid across server restarts.
+3. Run `python src/client/main.py` and open `http://127.0.0.1:8080`.

@@ -2,5 +2,4 @@ nicegui
 plotly
 python-dotenv
 httpx
-pymongo
 yfinance
