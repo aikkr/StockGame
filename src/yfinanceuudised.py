@@ -1,18 +1,21 @@
-import os
-from dotenv import load_dotenv
-import yfinance as yf
-import json
-import datetime
+"""Fetch stock news for the centrally configured server-side symbol list."""
 
-load_dotenv()
-stocks = json.loads(os.getenv("STOCKS"))
+import datetime
+import json
+
+import yfinance as yf
+
+from server.config import get_stock_symbols
+
+
 todayDate = datetime.date.today()
 
+
 def getNews(tick, fromDate, toDate):
+    """Fetch and filter Yahoo Finance news for one stock and date range."""
     stock = yf.Ticker(tick)
     uudis = stock.news
-    dic = {
-    }
+    dic = {}
     for article in uudis:
         content = article.get("content")
         title = content.get("title")
@@ -24,12 +27,12 @@ def getNews(tick, fromDate, toDate):
 
 
 def getNewsAsJSON(startDate: str, endDate: str):
+    """Write filtered news for all configured stocks to news.json."""
     all_news = {}
 
-    for ticker in stocks:
+    for ticker in get_stock_symbols():
         uudis = getNews(ticker, startDate, endDate)
         all_news[ticker] = uudis
 
-    json_file = open("news.json", "w")
-    json.dump(all_news, json_file)
-    json_file.close()
+    with open("news.json", "w", encoding="utf-8") as json_file:
+        json.dump(all_news, json_file)
