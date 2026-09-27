@@ -1,4 +1,3 @@
-VOW
 Aik Raudkats, Ivan Rozhanskiy, Kalju Yuan Pechter 12IT
 
 Probleem: Noored ei huvitu investeerimismaailmast ning ei loe uudiseid.
