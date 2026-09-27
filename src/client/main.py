@@ -1,4 +1,3 @@
-"""Start the NiceGUI application and register its server API routes."""
 import os
 import secrets
 import sys
