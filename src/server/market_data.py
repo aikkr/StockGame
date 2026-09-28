@@ -1,6 +1,10 @@
 """Provide market snapshots through a replaceable server-side data source."""
 
 from copy import deepcopy
+import math
+import random
+from threading import Lock
+from time import monotonic
 from typing import Protocol
 
 
@@ -46,29 +50,70 @@ class MarketDataSource(Protocol):
 
 
 class MockMarketDataSource:
-    """Serve deterministic temporary data until a live provider is available.
+    def __init__(self):
+        self._stocks = {}
+        self._last_update = monotonic()
+        self._lock = Lock()
 
-    Dependencies: configured symbols and module-level sample values.
-    Side effects: none.
-    Failure impact: none; unknown valid symbols receive generated sample values.
-    """
+    def _load_stocks(self, symbols):
+        for index, symbol in enumerate(symbols):
+            if symbol in self._stocks:
+                continue
+            price, _ = _SAMPLE_QUOTES.get(symbol, (round(40 + index * 13.17, 2), 0))
+            self._stocks[symbol] = {
+                'price': price,
+                'goal_price': price,
+                'start_price': price,
+                'history': [price],
+            }
+
+    def _update_prices(self):
+        now = monotonic()
+        elapsed_updates = int((now - self._last_update) / 15)
+        updates = min(elapsed_updates, 240)
+        if not updates:
+            return
+        self._last_update = now if elapsed_updates > 240 else self._last_update + updates * 15
+        for _ in range(updates):
+            for stock in self._stocks.values():
+                price = stock['price']
+                goal = stock['goal_price']
+                movement = (goal - price) * 0.12 + random.uniform(-goal * 0.003, goal * 0.003)
+                movement = max(-goal * 0.01, min(goal * 0.01, movement))
+                stock['price'] = round(max(0.01, price + movement), 2)
+                stock['history'].append(stock['price'])
+                stock['history'] = stock['history'][-240:]
+
+    def set_goal_price(self, symbol, goal_price):
+        if isinstance(goal_price, bool) or not isinstance(goal_price, (int, float)):
+            raise ValueError('Goal price must be a number.')
+        if not math.isfinite(goal_price) or not 0.01 <= goal_price <= 1_000_000:
+            raise ValueError('Goal price must be between 0.01 and 1,000,000.')
+        with self._lock:
+            if symbol not in self._stocks:
+                raise ValueError('Unknown stock symbol.')
+            self._stocks[symbol]['goal_price'] = round(float(goal_price), 2)
+            return self._stocks[symbol]['goal_price']
 
     def get_snapshot(self, symbols: tuple[str, ...]) -> dict:
         """Return quotes, histories, news, account data, and positions."""
+        with self._lock:
+            self._load_stocks(symbols)
+            self._update_prices()
+            states = deepcopy(self._stocks)
         stocks = []
-        for index, symbol in enumerate(symbols):
-            price, change = _SAMPLE_QUOTES.get(
-                symbol,
-                (round(40.0 + index * 13.17, 2), round(((index % 7) - 3) * 0.61, 2)),
-            )
+        for symbol in symbols:
+            state = states[symbol]
+            price = state['price']
+            change = (price / state['start_price'] - 1) * 100
             stocks.append({
                 'symbol': symbol,
                 'name': _COMPANY_NAMES.get(symbol, symbol),
                 'price': price,
-                'change': change,
+                'goal_price': state['goal_price'],
+                'change': round(change, 2),
                 'history': {
-                    period: [round(price * factor, 2) for factor in pattern]
-                    for period, pattern in PERIOD_PATTERNS.items()
+                    period: state['history'] for period in PERIOD_PATTERNS
                 },
             })
 
@@ -99,28 +144,17 @@ class MockMarketDataSource:
 
 
 class MarketService:
-    """Coordinate configured symbols with the active market data provider.
-
-    Dependencies: a MarketDataSource and a callable symbol loader.
-    Side effects: delegates to the configured provider.
-    Failure impact: provider errors propagate to the API for explicit handling.
-    """
 
     def __init__(self, data_source: MarketDataSource, symbol_loader):
-        """Create the service with replaceable data and configuration sources."""
         self._data_source = data_source
         self._symbol_loader = symbol_loader
 
     def get_snapshot(self) -> dict:
-        """Return a defensive copy of the current provider snapshot."""
         return deepcopy(self._data_source.get_snapshot(self._symbol_loader()))
 
-    def submit_order(self, symbol: str, side: str, quantity: int) -> str:
-        """Validate an order against configured symbols and return a demo result."""
-        if symbol not in self._symbol_loader():
+    def set_goal_price(self, symbol, goal_price):
+        symbols = self._symbol_loader()
+        if symbol not in symbols:
             raise ValueError('Unknown stock symbol.')
-        if side not in {'BUY', 'SELL'}:
-            raise ValueError('Order side must be BUY or SELL.')
-        if isinstance(quantity, bool) or not isinstance(quantity, int) or not 1 <= quantity <= 1_000_000:
-            raise ValueError('Quantity must be a whole number from 1 to 1,000,000.')
-        return f'Demo only: {side} {quantity} shares of {symbol}. No order was placed.'
+        self._data_source.get_snapshot(symbols)
+        return self._data_source.set_goal_price(symbol, goal_price)

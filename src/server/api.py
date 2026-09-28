@@ -21,14 +21,10 @@ def get_latest_news() -> dict:
     return {'news': get_news()}
 
 
-@app.post('/api/orders')
-def post_order(order: dict) -> dict:
+@app.post('/api/market/goal')
+def set_goal_price(data: dict) -> dict:
     try:
-        message = market_service.submit_order(
-            symbol=order.get('symbol'),
-            side=order.get('side'),
-            quantity=order.get('quantity'),
-        )
+        goal_price = market_service.set_goal_price(data.get('symbol'), data.get('goal_price'))
     except (AttributeError, ValueError) as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
-    return {'message': message}
+    return {'goal_price': goal_price}

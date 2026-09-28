@@ -22,14 +22,12 @@ async def get_news() -> list[dict]:
     return result['news']
 
 
-async def submit_order(symbol: str, side: str, quantity: int) -> str:
-    """Submit a validated simulated order to the local server."""
-    result = await _request('POST', '/api/orders', json={
+async def set_goal_price(symbol: str, goal_price: float) -> float:
+    result = await _request('POST', '/api/market/goal', json={
         'symbol': symbol,
-        'side': side,
-        'quantity': quantity,
+        'goal_price': goal_price,
     })
-    return result['message']
+    return result['goal_price']
 
 
 async def _request(method: str, path: str, **kwargs) -> dict:

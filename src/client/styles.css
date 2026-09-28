@@ -50,9 +50,19 @@ body, .q-page { background: var(--bg); color: #f3f4f7; font-family: var(--font-u
 .left-column, .center-column, .right-column { gap: 12px; min-width: 0; width: 100%; }
 .left-column { height: 100%; min-height: 0; overflow: hidden; }
 .news-panel { width: 100%; padding: 10px; gap: 6px; }
-.news-item { width: 100%; gap: 3px; font-size: 9px; border-bottom: 1px solid var(--line); padding-bottom: 4px; }
+.news-item { width: 100%; display: flex; flex-direction: column; gap: 3px; font: inherit; font-size: 9px; color: #f3f4f7; background: transparent; border: 0; border-bottom: 1px solid var(--line); padding: 3px 2px 6px; text-align: left; cursor: pointer; border-radius: 4px; }
+.news-item:hover { background: var(--raised); }
 .news-item:last-child { border: 0; padding-bottom: 0; }
 .news-meta { gap: 6px; font-size: 7px; }
+.news-dialog-card { width: min(680px, calc(100vw - 32px)); max-height: min(720px, calc(100vh - 48px)); overflow-y: auto; padding: 22px; gap: 13px; background: var(--panel); border: 1px solid var(--line); color: #f3f4f7; }
+.news-dialog-heading { width: 100%; align-items: flex-start; flex-wrap: nowrap; gap: 16px; }
+.news-dialog-title { flex: 1; min-width: 0; gap: 6px; }
+.news-dialog-headline { font-size: 20px; line-height: 1.3; font-weight: 600; }
+.news-dialog-close { color: var(--muted) !important; }
+.news-dialog-meta { font-size: 10px; }
+.news-dialog-separator { background: var(--line); }
+.news-dialog-body { font-size: 13px; line-height: 1.7; white-space: pre-wrap; }
+.news-dialog-link { align-self: flex-start; padding: 8px 13px; text-decoration: none; font-size: 9px; }
 .stocks-panel { width: 100%; padding: 10px; gap: 6px; flex: 1; min-height: 0; overflow: hidden; }
 .stock-list { width: 100%; min-height: 0; max-height: max(220px, calc(100vh - 300px)); overflow-y: auto; gap: 0; padding-right: 2px; }
 .search-input { width: 100%; background: var(--raised); border-radius: 5px; padding: 0 8px; }
@@ -108,6 +118,8 @@ body, .q-page { background: var(--bg); color: #f3f4f7; font-family: var(--font-u
 .watch-button { width: 100%; color: var(--muted) !important; font-size: 9px; border: 1px solid var(--line); margin-top: 5px; min-height: 24px; }
 .watch-button .q-icon { font-size: 12px; }
 .watch-panel { width: 100%; padding: 10px; gap: 8px; }
+.debug-panel { width: 100%; padding: 10px; gap: 8px; font-size: 9px; }
+.debug-button { width: 100%; min-height: 28px; font-size: 9px; }
 .watch-panel .section-title, .watch-panel .caption { font-size: 8px; }
 .watch-items { width: 100%; background: var(--raised); border-radius: 6px; gap: 0; padding: 2px; }
 .watch-items .stock-row { gap: 5px; padding: 5px; }

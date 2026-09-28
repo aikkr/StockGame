@@ -1,5 +1,3 @@
-"""Fetch rotating stock news and expose the latest server-side items."""
-
 import asyncio
 import random
 from collections import deque
@@ -17,12 +15,6 @@ _task = None
 
 
 def get_news() -> list[dict]:
-    """Return a copy of the newest generated news items.
-
-    Dependencies: the in-process news updater.
-    Side effects: none.
-    Failure impact: callers receive an empty list before the first update.
-    """
     return list(_items)
 
 
@@ -42,26 +34,24 @@ def _fetch_item(symbol: str) -> dict:
             'symbol': symbol,
             'age': 'just now',
             'headline': article['headline'],
-            'summary': article.get('summary', ''),
+            'body': article.get('body', ''),
             'date': article.get('date', ''),
+            'provider': article.get('provider', ''),
+            'url': article.get('url', ''),
         }
     timestamp = datetime.now(timezone.utc).strftime('%H:%M:%S UTC')
     return {
         'symbol': symbol,
         'age': 'just now',
         'headline': f'No recent Yahoo Finance headline for {symbol} ({timestamp})',
-        'summary': '',
+        'body': 'Yahoo Finance did not return an article for this ticker.',
         'date': datetime.now(timezone.utc).date().isoformat(),
+        'provider': 'Yahoo Finance',
+        'url': '',
     }
 
 
 async def update_news() -> None:
-    """Continuously fetch news for alternating random configured stocks.
-
-    Dependencies: configured STOCKS and the yfinance news adapter.
-    Side effects: performs network reads and updates the in-memory news feed.
-    Failure impact: a failed request produces a timestamped fallback item.
-    """
     global _last_symbol
     while True:
         symbol = _choose_symbol()
@@ -72,24 +62,12 @@ async def update_news() -> None:
 
 
 def start_news_updates() -> None:
-    """Start the single application-wide news update task.
-
-    Dependencies: NiceGUI's running event loop.
-    Side effects: creates one background task that performs periodic network reads.
-    Failure impact: live news remains at its last successfully generated state.
-    """
     global _task
     if _task is None or _task.done():
         _task = background_tasks.create(update_news(), name='stock-news-updater')
 
 
 async def stop_news_updates() -> None:
-    """Cancel the news update task during application shutdown.
-
-    Dependencies: a previously started news task.
-    Side effects: cancels pending periodic work.
-    Failure impact: none; shutdown continues if no task exists.
-    """
     global _task
     if _task is not None:
         _task.cancel()

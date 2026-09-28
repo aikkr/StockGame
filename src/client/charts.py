@@ -24,16 +24,9 @@ def line_chart(values, color, background, market=False, period='1W'):
                    fixedrange=True, visible=market, tickprefix='$'),
     )
     if market:
-        labels = {
-            '1D': ['09:00', '11:00', '13:00', '15:00', '17:00'],
-            '1W': ['MON', 'TUE', 'WED', 'THU', 'FRI'],
-            '1M': ['WEEK 1', 'WEEK 2', 'WEEK 3', 'WEEK 4', 'WEEK 5'],
-            '1Y': ['JAN', 'APR', 'JUL', 'OCT', 'DEC'],
-        }
-        figure.update_xaxes(tickvals=[0, 1.5, 3, 4.5, 6], ticktext=labels[period], range=[-.2, 6.8])
-        # The reference places the price line in the upper half of the chart.
-        figure.update_yaxes(range=[0, max(values) * 1.06], tickformat=',.0f',
-                            tickvals=[stock_level * max(values) / 360 for stock_level in [200, 240, 280, 320, 360]])
+        padding = max((max(values) - min(values)) * 0.15, max(values) * 0.002)
+        figure.update_xaxes(title='SIMULATED MINUTES', range=[-.2, max(1, len(values) - .8)])
+        figure.update_yaxes(range=[max(0, min(values) - padding), max(values) + padding])
     else:
         figure.update_xaxes(visible=False)
         figure.update_yaxes(range=[0, max(values) * 1.1])
