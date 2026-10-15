@@ -16,10 +16,9 @@ async def get_market() -> dict:
     return await _request('GET', '/api/market')
 
 
-async def get_news() -> list[dict]:
+async def get_news() -> dict:
     """Load the latest news feed without refreshing the page."""
-    result = await _request('GET', '/api/news')
-    return result['news']
+    return await _request('GET', '/api/news')
 
 
 async def set_goal_price(symbol: str, goal_price: float) -> float:
@@ -28,6 +27,14 @@ async def set_goal_price(symbol: str, goal_price: float) -> float:
         'goal_price': goal_price,
     })
     return result['goal_price']
+
+
+async def set_market_event(active: bool) -> dict:
+    """Toggle the shared event through HTTP; API failures raise MarketApiError.
+
+    Dependencies: local market API. Side effects: pauses/resumes the simulation.
+    """
+    return await _request('POST', '/api/market/event', json={'active': active})
 
 
 async def _request(method: str, path: str, **kwargs) -> dict:

@@ -1,26 +1,18 @@
-"""Render the trading screen from server API data and local interaction state.
-
-Dependencies: NiceGUI, the local server API, charts, and portfolio helpers.
-Side effects: creates UI elements, submits periodic saves, and refreshes live news.
-Failure impact: API errors produce a safe unavailable state or retain existing data.
-"""
+import logging
+import math
+import sqlite3
 
 from nicegui import ui
 
-from api import MarketApiError, get_market, get_news, set_goal_price
+from api import MarketApiError, get_market, get_news, set_goal_price, set_market_event
 from charts import stock_chart
 from components import change_badge, header, metric, plot
 from portfolio import TradeError, apply_trade, load_cash, load_portfolio, portfolio_value
+from server import config
 from server.sessions import load_user, save_progress
 
 
 async def market_page():
-    """Build one player's interactive market page and article dialog.
-
-    Dependencies: the market API and the current NiceGUI browser session.
-    Side effects: loads saved state and starts per-page refresh and save timers.
-    Failure impact: unavailable market data renders an error panel.
-    """
     user, saved = load_user()
     try:
         market = await get_market()
@@ -45,7 +37,12 @@ async def market_page():
     period = saved.get('period') if saved.get('period') in {'1D', '1W', '1M', '1Y'} else '1W'
     side = saved.get('side') if saved.get('side') in {'BUY', 'SELL'} else 'BUY'
     quantity = saved.get('quantity', 50)
-    if isinstance(quantity, bool) or not isinstance(quantity, (int, float)) or quantity <= 0:
+    if (
+        isinstance(quantity, bool)
+        or not isinstance(quantity, (int, float))
+        or not math.isfinite(quantity)
+        or not 0 < quantity <= 1_000_000
+    ):
         quantity = 50
     state = dict(
         stock=selected,
@@ -65,11 +62,27 @@ async def market_page():
     }
     news_items = list(market['news'])
     selected_news = {'article': None}
+    event = dict(market['event'])
+    seen_event = {'id': 0}
+
+    def show_event_popup():
+        if event['active'] and event['id'] != seen_event['id']:
+            seen_event['id'] = event['id']
+            event_dialog.open()
+
+    async def toggle_event():
+        try:
+            await set_market_event(not event['active'])
+        except MarketApiError:
+            ui.notify('Could not change the market event. Try again.', type='negative')
+            return
+        await refresh_market()
 
     def persist_progress():
         if user['id'] == 0:
-            return
-        save_progress(user['id'], {
+            return True
+        progress = {
+            '_generation': saved.get('_generation'),
             'selected_symbol': state['stock']['symbol'],
             'period': state['period'],
             'side': state['side'],
@@ -77,21 +90,49 @@ async def market_page():
             'watchlist': sorted(watchlist),
             'portfolio': dict(portfolio),
             'cash': state['cash'],
-        })
+        }
+        try:
+            save_progress(user['id'], progress, saved)
+        except ValueError as error:
+            ui.notify(str(error), type='negative')
+            return False
+        except sqlite3.Error:
+            logging.getLogger(__name__).exception('Could not save player progress')
+            ui.notify('Progress could not be saved. Check database access and disk space.', type='negative')
+            return False
+        saved.clear()
+        saved.update(progress)
+        return True
 
     async def refresh_news():
         try:
             latest = await get_news()
         except MarketApiError:
             return
-        if latest != news_items:
-            news_items[:] = latest
+        if latest['news'] != news_items:
+            news_items[:] = latest['news']
             news_panel.refresh()
 
     async def refresh_market():
         try:
             latest = await get_market()
         except MarketApiError:
+            return
+        event_changed = latest['event'] != event
+        event.clear()
+        event.update(latest['event'])
+        show_event_popup()
+        if not event['active']:
+            event_dialog.close()
+        if latest['news'] != news_items:
+            news_items[:] = latest['news']
+            news_panel.refresh()
+        if config.DEBUG and event_changed:
+            event_panel.refresh()
+        prices_changed = any(
+            stock_by_symbol.get(stock['symbol']) != stock for stock in latest['stocks']
+        )
+        if not prices_changed and not event_changed:
             return
         for updated in latest['stocks']:
             stock = stock_by_symbol.get(updated['symbol'])
@@ -103,16 +144,19 @@ async def market_page():
         order_panel.refresh()
         watch_panel.refresh()
         position_panel.refresh()
-        debug_panel.refresh()
+        if config.DEBUG:
+            debug_panel.refresh()
         account_header.refresh()
 
     def select_stock(stock):
         state['stock'] = stock
+        persist_progress()
         stock_list.refresh()
         chart_panel.refresh()
         order_panel.refresh()
         position_panel.refresh()
-        debug_panel.refresh()
+        if config.DEBUG:
+            debug_panel.refresh()
 
     def filter_stocks(value):
         state['search'] = value or ''
@@ -164,14 +208,19 @@ async def market_page():
 
     def set_side(side):
         state['side'] = side
+        persist_progress()
         order_panel.refresh()
 
     def toggle_watchlist():
+        previous = set(watchlist)
         symbol = state['stock']['symbol']
         if symbol in watchlist:
             watchlist.remove(symbol)
         else:
             watchlist.add(symbol)
+        if not persist_progress():
+            watchlist.clear()
+            watchlist.update(previous)
         watch_panel.refresh()
         order_panel.refresh()
 
@@ -187,6 +236,8 @@ async def market_page():
             ui.notify('Enter a positive whole number of shares.', type='warning')
             return
         stock = state['stock']
+        previous_cash = state['cash']
+        previous_portfolio = dict(portfolio)
         try:
             state['cash'] = apply_trade(
                 portfolio,
@@ -199,6 +250,11 @@ async def market_page():
             )
         except TradeError as error:
             ui.notify(str(error), type='warning')
+            return
+        if not persist_progress():
+            state['cash'] = previous_cash
+            portfolio.clear()
+            portfolio.update(previous_portfolio)
             return
         ui.notify(
             f'{state["side"]} order completed: {int(quantity)} shares of {stock["symbol"]}.',
@@ -229,7 +285,10 @@ async def market_page():
 
             def update_quantity(event):
                 """Update estimated order value after quantity input changes."""
+                if event.value is None or not math.isfinite(event.value):
+                    return
                 state['quantity'] = event.value
+                persist_progress()
                 total = (event.value or 0) * stock['price']
                 total += handling_fee if state['side'] == 'BUY' else -handling_fee
                 cost.set_text(f'${max(0, total):,.2f}')
@@ -293,18 +352,17 @@ async def market_page():
             debug_panel.refresh()
 
         with ui.column().classes('panel debug-panel'):
-            ui.label('PRICE DEBUG').classes('section-title')
-            with ui.row().classes('spread'):
-                ui.label('Actual price').classes('muted')
-                ui.label(f'${stock["price"]:,.2f}').classes('mono green')
             target = ui.number(
                 label=f'{stock["symbol"]} goal price',
-                value=stock['goal_price'],
+                value=round(stock['goal_price'], 2),
                 min=0.01,
                 max=1_000_000,
                 step=0.01,
             ).props('outlined dense hide-bottom-space').classes('quantity-input mono')
-            ui.button('SET GOAL PRICE', on_click=save_goal).classes('primary-button debug-button')
+            goal_button = ui.button('SET GOAL PRICE', on_click=save_goal).classes('primary-button debug-button')
+            if event['active']:
+                target.disable()
+                goal_button.disable()
 
     @ui.refreshable
     def position_panel():
@@ -378,6 +436,24 @@ async def market_page():
         with ui.card().classes('news-dialog-card'):
             news_dialog_content()
 
+    with ui.dialog() as event_dialog:
+        with ui.card().classes('news-dialog-card'):
+            ui.label('Trump has woken up').classes('news-dialog-headline')
+            ui.label(
+                'News and normal price movement are paused. '
+                'Stock goals now change randomly every second, with rare extreme moves. '
+                'At least one stock moves each round.'
+            ).classes('news-dialog-body')
+            ui.button('BACK TO MARKET', on_click=event_dialog.close).classes('primary-button')
+
+    @ui.refreshable
+    def event_panel():
+        with ui.column().classes('panel debug-panel'):
+            ui.label('Trump has woken up').classes('yellow')
+            ui.button(
+                'END EVENT' if event['active'] else 'TRIGGER EVENT', on_click=toggle_event,
+            ).classes('primary-button')
+
     @ui.refreshable
     def account_header():
         """Render account totals calculated from client-side portfolio state."""
@@ -405,8 +481,10 @@ async def market_page():
         with ui.column().classes('right-column'):
             order_panel()
             watch_panel()
-            debug_panel()
+            if config.DEBUG:
+                event_panel()
+                debug_panel()
 
     ui.timer(10, refresh_news)
-    ui.timer(15, refresh_market)
-    ui.timer(20, persist_progress)
+    ui.timer(1, refresh_market)
+    show_event_popup()

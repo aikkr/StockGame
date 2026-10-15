@@ -2,6 +2,7 @@
 .vscode
 .nicegui/
 /test
+/tests
 *.db
 *.db-shm
 *.db-wal

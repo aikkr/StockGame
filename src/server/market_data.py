@@ -4,8 +4,11 @@ from copy import deepcopy
 import math
 import random
 from threading import Lock
-from time import monotonic
+from time import time
 from typing import Protocol
+
+from server.config import get_stock_symbols
+from server.state import database
 
 
 PERIOD_PATTERNS = {
@@ -37,52 +40,168 @@ _SAMPLE_QUOTES = {
 
 
 class MarketDataSource(Protocol):
-    """Define the provider contract used by the market API.
-
-    Dependencies: none beyond configured stock symbols.
-    Side effects: implementation-specific; providers may call external services.
-    Failure impact: a provider failure makes market snapshots unavailable.
-    """
-
     def get_snapshot(self, symbols: tuple[str, ...]) -> dict:
         """Build one complete market snapshot for the requested symbols."""
         ...
 
 
 class MockMarketDataSource:
-    def __init__(self):
-        self._stocks = {}
-        self._last_update = monotonic()
+    def __init__(self, database=None):
+        self._database = database
+        self._stocks = database.load_market() if database else {}
+        self._last_update = time()
         self._lock = Lock()
+        self._event_active = False
+        self._event_id = 0
+        self._saved_goals = {}
+
+    def get_event(self):
+        with self._lock:
+            return self._event_status()
+
+    def _event_status(self):
+        return {
+            'active': self._event_active,
+            'id': self._event_id,
+            'title': 'Trump has woken up',
+            'update_seconds': 1 if self._event_active else 15,
+        }
+
+    def set_event_active(self, active, symbols):
+        if not isinstance(active, bool):
+            raise ValueError('Event active must be true or false.')
+        with self._lock:
+            if active == self._event_active:
+                return self._event_status()
+            self._load_stocks(symbols)
+            if active and not symbols:
+                raise ValueError('No stocks are configured.')
+            previous = deepcopy(self._stocks)
+            saved_goals = {}
+            if active:
+                saved_goals = {symbol: self._stocks[symbol]['goal_price'] for symbol in symbols}
+            else:
+                for symbol, goal in self._saved_goals.items():
+                    self._stocks[symbol]['goal_price'] = goal
+            for stock in self._stocks.values():
+                stock['goal_revision'] = stock.get('goal_revision', 0) + 1
+            try:
+                self._save_stocks()
+            except Exception:
+                self._stocks = previous
+                raise
+            self._saved_goals = saved_goals
+            self._event_active = active
+            if active:
+                self._event_id += 1
+            self._last_update = time()
+            return self._event_status()
+
+    def _event_goal(self, price, change):
+        return round(max(0.01, min(1_000_000, price * (1 + change / 100))), 2)
+
+    def _update_event_goals(self):
+        changed = False
+        for symbol in self._saved_goals:
+            stock = self._stocks[symbol]
+            roll = random.random()
+            change = 0
+            if roll < 0.01:
+                change = random.choice((-1, 1)) * random.uniform(20, 40)
+            elif roll < 0.25:
+                change = random.choice((-1, 1)) * random.uniform(3, 7)
+            stock['goal_price'] = self._event_goal(stock['price'], change)
+            changed |= stock['goal_price'] != stock['price']
+        if not changed:
+            stock = self._stocks[random.choice(tuple(self._saved_goals))]
+            change = random.choice((-5, 5))
+            goal = self._event_goal(stock['price'], change)
+            if goal == stock['price']:
+                goal = self._event_goal(stock['price'], -change)
+            if goal == stock['price']:
+                goal = round(stock['price'] + 0.01, 2)
+            stock['goal_price'] = goal
+
+    def _save_stocks(self):
+        if self._database:
+            stocks = self._stocks
+            if self._event_active:
+                stocks = deepcopy(stocks)
+                for symbol, goal in self._saved_goals.items():
+                    stocks[symbol]['goal_price'] = goal
+            self._database.save_market(stocks)
 
     def _load_stocks(self, symbols):
+        now = time()
+        changed = False
         for index, symbol in enumerate(symbols):
             if symbol in self._stocks:
+                stock = self._stocks[symbol]
+                if 'base_price' not in stock:
+                    stock['base_price'] = stock['price']
+                    stock['goal_price'] = self._limit_news_goal(stock, stock['goal_price'])
+                    changed = True
+                if not stock.get('history_times') or now - stock['history_times'][-1] > 600:
+                    stock['history'] = [stock['price']]
+                    stock['history_times'] = [now]
+                    stock['chart_start'] = now
                 continue
             price, _ = _SAMPLE_QUOTES.get(symbol, (round(40 + index * 13.17, 2), 0))
             self._stocks[symbol] = {
                 'price': price,
+                'base_price': price,
                 'goal_price': price,
                 'start_price': price,
                 'history': [price],
+                'history_times': [now],
+                'chart_start': now,
+                'processed_news': [],
             }
+            changed = True
+        if changed:
+            self._save_stocks()
+
+    def _limit_news_goal(self, stock, goal):
+        base = stock['base_price']
+        return round(max(0.01, min(1_000_000, max(base * 0.85, min(base * 1.15, goal)))), 2)
 
     def _update_prices(self):
-        now = monotonic()
-        elapsed_updates = int((now - self._last_update) / 15)
-        updates = min(elapsed_updates, 240)
-        if not updates:
+        now = time()
+        interval = 1 if self._event_active else 15
+        elapsed_updates = int((now - self._last_update) / interval)
+        updates = min(elapsed_updates, 40)
+        if updates <= 0:
             return
-        self._last_update = now if elapsed_updates > 240 else self._last_update + updates * 15
+        if elapsed_updates > 40:
+            self._last_update = now - updates * interval
         for _ in range(updates):
-            for stock in self._stocks.values():
+            self._last_update += interval
+            if self._event_active:
+                self._update_event_goals()
+            for symbol, stock in self._stocks.items():
+                if self._event_active and symbol not in self._saved_goals:
+                    continue
+                if not stock.get('history_times') or self._last_update <= stock['history_times'][-1]:
+                    continue
                 price = stock['price']
                 goal = stock['goal_price']
-                movement = (goal - price) * 0.12 + random.uniform(-goal * 0.003, goal * 0.003)
-                movement = max(-goal * 0.01, min(goal * 0.01, movement))
-                stock['price'] = round(max(0.01, price + movement), 2)
+                base = stock['base_price']
+                if self._event_active:
+                    movement = (goal - price) * 0.25
+                    if goal != price and abs(movement) < 0.01:
+                        movement = goal - price
+                else:
+                    stock['goal_price'] = round(base + (goal - base) * 0.98, 4)
+                    movement = (stock['goal_price'] - price) * 0.02
+                    movement += random.uniform(-price * 0.006, price * 0.006)
+                    movement = max(-price * 0.01, min(price * 0.01, movement))
+                stock['price'] = round(max(0.01, min(1_000_000, price + movement)), 2)
                 stock['history'].append(stock['price'])
-                stock['history'] = stock['history'][-240:]
+                stock['history_times'].append(self._last_update)
+                while stock['history_times'][0] < self._last_update - 600:
+                    stock['history_times'].pop(0)
+                    stock['history'].pop(0)
+        self._save_stocks()
 
     def set_goal_price(self, symbol, goal_price):
         if isinstance(goal_price, bool) or not isinstance(goal_price, (int, float)):
@@ -90,10 +209,81 @@ class MockMarketDataSource:
         if not math.isfinite(goal_price) or not 0.01 <= goal_price <= 1_000_000:
             raise ValueError('Goal price must be between 0.01 and 1,000,000.')
         with self._lock:
+            if self._event_active:
+                raise ValueError('Manual goals are paused during the market event.')
             if symbol not in self._stocks:
                 raise ValueError('Unknown stock symbol.')
+            previous = self._stocks[symbol]['goal_price']
+            revision = self._stocks[symbol].get('goal_revision', 0)
             self._stocks[symbol]['goal_price'] = round(float(goal_price), 2)
+            self._stocks[symbol]['goal_revision'] = revision + 1
+            try:
+                self._save_stocks()
+            except Exception:
+                self._stocks[symbol]['goal_price'] = previous
+                self._stocks[symbol]['goal_revision'] = revision
+                raise
             return self._stocks[symbol]['goal_price']
+
+    def has_processed_news(self, symbol, article_id):
+        with self._lock:
+            stock = self._stocks.get(symbol, {})
+            return article_id in stock.get('processed_news', [])
+
+    def initialize_news(self, symbol, articles):
+        with self._lock:
+            stock = self._stocks[symbol]
+            if stock.get('news_initialized') or not articles:
+                return False
+            previous = deepcopy(stock)
+            stock['news_initialized'] = True
+            processed = stock.setdefault('processed_news', [])
+            for article in articles:
+                if article['id'] not in processed:
+                    processed.append(article['id'])
+            stock['news_reports'] = [
+                dict(article, reason='Existing headline: used as background, no price change.')
+                for article in articles[:10]
+            ]
+            try:
+                self._save_stocks()
+            except Exception:
+                self._stocks[symbol] = previous
+                raise
+            return True
+
+    def apply_news_goal(self, symbol, article_id, previous_goal, new_goal,
+                        expected_revision=None, report=None):
+        with self._lock:
+            stock = self._stocks[symbol]
+            if self._event_active:
+                raise ValueError('News is paused during the market event.')
+            if article_id in stock.get('processed_news', []):
+                return False
+            changed = stock['goal_price'] != previous_goal
+            if expected_revision is not None:
+                changed = stock.get('goal_revision', 0) != expected_revision
+            if changed:
+                raise ValueError('Goal changed while AI was reading the news; retrying.')
+            if not math.isfinite(new_goal) or not 0.01 <= new_goal <= 1_000_000:
+                raise ValueError('Invalid AI goal price.')
+            previous = deepcopy(stock)
+            adjusted_goal = stock['goal_price'] * new_goal / previous_goal
+            if new_goal != previous_goal:
+                stock['goal_price'] = self._limit_news_goal(stock, adjusted_goal)
+            stock['goal_revision'] = stock.get('goal_revision', 0) + 1
+            stock.setdefault('processed_news', []).append(article_id)
+            if report:
+                report = dict(report, previous_goal=previous['goal_price'], goal_price=stock['goal_price'])
+                reports = stock.setdefault('news_reports', [])
+                reports.insert(0, report)
+                stock['news_reports'] = reports[:20]
+            try:
+                self._save_stocks()
+            except Exception:
+                self._stocks[symbol] = previous
+                raise
+            return True
 
     def get_snapshot(self, symbols: tuple[str, ...]) -> dict:
         """Return quotes, histories, news, account data, and positions."""
@@ -101,17 +291,23 @@ class MockMarketDataSource:
             self._load_stocks(symbols)
             self._update_prices()
             states = deepcopy(self._stocks)
+            event = self._event_status()
         stocks = []
         for symbol in symbols:
             state = states[symbol]
             price = state['price']
-            change = (price / state['start_price'] - 1) * 100
+            change = (price / state['history'][0] - 1) * 100
             stocks.append({
                 'symbol': symbol,
                 'name': _COMPANY_NAMES.get(symbol, symbol),
                 'price': price,
                 'goal_price': state['goal_price'],
+                'goal_revision': state.get('goal_revision', 0),
+                'news_reports': state.get('news_reports', []),
                 'change': round(change, 2),
+                'history_times': state['history_times'],
+                'chart_start': max(state['chart_start'], state['history_times'][-1] - 600),
+                'chart_end': max(state['chart_start'] + 600, state['history_times'][-1]),
                 'history': {
                     period: state['history'] for period in PERIOD_PATTERNS
                 },
@@ -128,6 +324,7 @@ class MockMarketDataSource:
             }
 
         return {
+            'event': event,
             'stocks': stocks,
             'news': [
                 {'symbol': 'TTT_CORP', 'age': '3m ago', 'headline': 'Triple T did a backflip!!!'},
@@ -152,9 +349,33 @@ class MarketService:
     def get_snapshot(self) -> dict:
         return deepcopy(self._data_source.get_snapshot(self._symbol_loader()))
 
+    def get_event(self):
+        """Read shared event status. Dependencies: data source. Side effects: none."""
+        return self._data_source.get_event()
+
+    def set_event_active(self, active):
+        """Toggle the shared event via the data source; invalid requests raise ValueError.
+
+        Dependencies: symbol loader. Side effects: changes market timing and goals.
+        """
+        return self._data_source.set_event_active(active, self._symbol_loader())
+
     def set_goal_price(self, symbol, goal_price):
         symbols = self._symbol_loader()
         if symbol not in symbols:
             raise ValueError('Unknown stock symbol.')
         self._data_source.get_snapshot(symbols)
         return self._data_source.set_goal_price(symbol, goal_price)
+
+    def has_processed_news(self, symbol, article_id):
+        return self._data_source.has_processed_news(symbol, article_id)
+
+    def initialize_news(self, symbol, articles):
+        self.get_snapshot()
+        return self._data_source.initialize_news(symbol, articles)
+
+    def apply_news_goal(self, symbol, article_id, previous_goal, new_goal, **details):
+        return self._data_source.apply_news_goal(symbol, article_id, previous_goal, new_goal, **details)
+
+
+market_service = MarketService(MockMarketDataSource(database), get_stock_symbols)

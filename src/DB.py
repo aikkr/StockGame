@@ -8,18 +8,19 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
 
-from dotenv import load_dotenv
+from server.config import PROJECT_ROOT
 
 
 class UserDatabase:
     def __init__(self, path: str | Path | None = None):
-        load_dotenv()
         configured_path = path or os.getenv('STOCKGAME_DB_PATH')
         self.path = (
             Path(configured_path)
             if configured_path
             else Path(__file__).with_name('stockgame.db')
         )
+        if not self.path.is_absolute():
+            self.path = PROJECT_ROOT / self.path
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._create_tables()
 
@@ -60,6 +61,10 @@ class UserDatabase:
                     data TEXT NOT NULL,
                     PRIMARY KEY (user_id, save_name),
                     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+                );
+                CREATE TABLE IF NOT EXISTS market_state (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    data TEXT NOT NULL
                 );
                 '''
             )
@@ -117,9 +122,18 @@ class UserDatabase:
                 (datetime.now(timezone.utc).isoformat(), user_id),
             )
 
-    def addSave(self, user_id: int, save_name: str, stocks: dict) -> None:
-        data = json.dumps(stocks, separators=(',', ':'))
+    def addSave(self, user_id: int, save_name: str, stocks: dict, expected=None) -> None:
+        data = json.dumps(stocks, separators=(',', ':'), allow_nan=False)
         with self._connect() as connection:
+            if expected is not None:
+                connection.execute('BEGIN IMMEDIATE')
+                row = connection.execute(
+                    'SELECT data FROM saves WHERE user_id = ? AND save_name = ?',
+                    (user_id, save_name),
+                ).fetchone()
+                current = json.loads(row['data']) if row else {}
+                if current != expected:
+                    raise ValueError('Progress changed in another tab. Refresh this page before continuing.')
             connection.execute(
                 '''
                 INSERT INTO saves (user_id, save_name, data) VALUES (?, ?, ?)
@@ -148,6 +162,20 @@ class UserDatabase:
                 'DELETE FROM saves WHERE user_id = ? AND save_name = ?',
                 (user_id, save_name),
             )
+
+    def save_market(self, stocks):
+        data = json.dumps(stocks, allow_nan=False)
+        with self._connect() as connection:
+            connection.execute(
+                'INSERT INTO market_state (id, data) VALUES (1, ?) '
+                'ON CONFLICT(id) DO UPDATE SET data = excluded.data',
+                (data,),
+            )
+
+    def load_market(self):
+        with self._connect() as connection:
+            row = connection.execute('SELECT data FROM market_state WHERE id = 1').fetchone()
+        return json.loads(row['data']) if row else {}
 
     def addSession(self, user_id: int) -> str:
         token = secrets.token_urlsafe(32)

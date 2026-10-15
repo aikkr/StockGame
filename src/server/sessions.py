@@ -1,21 +1,15 @@
-"""Connect NiceGUI browser sessions to locally persisted users and saves."""
+import secrets
 
 from nicegui import app, core
 
-from DB import UserDatabase
+from server.state import database
 
 
 CURRENT_SAVE = 'current'
-database = UserDatabase()
 
 
 def load_user() -> tuple[dict, dict]:
-    """Load the current browser's user and saved progress, creating it if absent.
 
-    Dependencies: NiceGUI browser storage and the local UserDatabase.
-    Side effects: may create a user/session and updates login metadata.
-    Failure impact: database errors prevent the market page from loading.
-    """
     if core.is_script_mode_preflight():
         return {'id': 0, 'name': 'Preview'}, {}
 
@@ -30,11 +24,9 @@ def load_user() -> tuple[dict, dict]:
     return user, database.getSave(user['id'], CURRENT_SAVE) or {}
 
 
-def save_progress(user_id: int, progress: dict) -> None:
-    """Persist the current game state under the user's active save.
+def save_progress(user_id: int, progress: dict, previous=None) -> None:
+    database.addSave(user_id, CURRENT_SAVE, progress, expected=previous)
 
-    Dependencies: the local UserDatabase and JSON-serializable state.
-    Side effects: replaces the user's current save.
-    Failure impact: progress since the previous save may be lost.
-    """
-    database.addSave(user_id, CURRENT_SAVE, progress)
+
+def reset_progress(user_id: int) -> None:
+    database.addSave(user_id, CURRENT_SAVE, {'_generation': secrets.token_urlsafe(16)})
