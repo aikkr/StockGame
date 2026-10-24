@@ -4,10 +4,11 @@ from copy import deepcopy
 import math
 import random
 from threading import Lock
-from time import time
+from time import monotonic, time
 from typing import Protocol
 
 from server.config import get_stock_symbols
+from server.news_identity import get_publication_id
 from server.state import database
 
 
@@ -38,6 +39,9 @@ _SAMPLE_QUOTES = {
     'CAT': (257.73, 0.94),
 }
 
+EVENT_DURATION_SECONDS = 50
+EVENT_WAIT_SECONDS = (300, 600)
+
 
 class MarketDataSource(Protocol):
     def get_snapshot(self, symbols: tuple[str, ...]) -> dict:
@@ -54,48 +58,89 @@ class MockMarketDataSource:
         self._event_active = False
         self._event_id = 0
         self._saved_goals = {}
+        self._event_deadline = None
+        self._next_event_at = monotonic() + random.uniform(*EVENT_WAIT_SECONDS)
 
     def get_event(self):
+        """Read event status and expire overdue events; uses the clock and may save restored goals."""
         with self._lock:
+            self._expire_event()
             return self._event_status()
+
+    def _expire_event(self):
+        if self._event_active and monotonic() >= self._event_deadline:
+            self._set_event_active(False, ())
 
     def _event_status(self):
         return {
             'active': self._event_active,
             'id': self._event_id,
-            'title': 'Trump has woken up',
+            'title': 'TRUMP HAS WAKEN UP!!!!' if self._event_active else 'Trump went sleep.',
             'update_seconds': 1 if self._event_active else 15,
         }
 
     def set_event_active(self, active, symbols):
+        """Toggle shared volatility; uses storage and clock, restores state if saving fails."""
         if not isinstance(active, bool):
             raise ValueError('Event active must be true or false.')
         with self._lock:
-            if active == self._event_active:
-                return self._event_status()
-            self._load_stocks(symbols)
-            if active and not symbols:
-                raise ValueError('No stocks are configured.')
-            previous = deepcopy(self._stocks)
-            saved_goals = {}
-            if active:
-                saved_goals = {symbol: self._stocks[symbol]['goal_price'] for symbol in symbols}
-            else:
-                for symbol, goal in self._saved_goals.items():
-                    self._stocks[symbol]['goal_price'] = goal
-            for stock in self._stocks.values():
-                stock['goal_revision'] = stock.get('goal_revision', 0) + 1
+            self._expire_event()
+            self._set_event_active(active, symbols)
+            return self._event_status()
+
+    def _set_event_active(self, active, symbols):
+        if active == self._event_active:
+            return
+        self._load_stocks(symbols)
+        if active and not symbols:
+            raise ValueError('No stocks are configured.')
+        previous = deepcopy(self._stocks)
+        saved_goals = {}
+        if active:
+            saved_goals = {symbol: self._stocks[symbol]['goal_price'] for symbol in symbols}
+        else:
+            for symbol, goal in self._saved_goals.items():
+                self._stocks[symbol]['goal_price'] = goal
+        for stock in self._stocks.values():
+            stock['goal_revision'] = stock.get('goal_revision', 0) + 1
+        try:
+            self._save_stocks()
+        except Exception:
+            self._stocks = previous
+            raise
+        self._saved_goals = saved_goals
+        self._event_active = active
+        if active:
+            self._event_id += 1
+            self._event_deadline = monotonic() + EVENT_DURATION_SECONDS
+        else:
+            self._event_deadline = None
+            self._next_event_at = monotonic() + random.uniform(*EVENT_WAIT_SECONDS)
+        self._last_update = time()
+
+    def has_published_news(self, publication_id, symbol=None):
+        """Read durable headline history, optionally for one stock; no I/O or state changes."""
+        with self._lock:
+            stocks = self._stocks.values() if symbol is None else (self._stocks.get(symbol, {}),)
+            return any(publication_id in stock.get('published_news', []) for stock in stocks)
+
+    def publish_news(self, symbol, publication_id):
+        """Reserve an unused headline unless paused; saves to storage, rolls back on save failure."""
+        with self._lock:
+            self._expire_event()
+            if self._event_active:
+                return False
+            if any(publication_id in stock.get('published_news', []) for stock in self._stocks.values()):
+                return False
+            stock = self._stocks[symbol]
+            published = stock.setdefault('published_news', [])
+            published.append(publication_id)
             try:
                 self._save_stocks()
             except Exception:
-                self._stocks = previous
+                published.pop()
                 raise
-            self._saved_goals = saved_goals
-            self._event_active = active
-            if active:
-                self._event_id += 1
-            self._last_update = time()
-            return self._event_status()
+            return True
 
     def _event_goal(self, price, change):
         return round(max(0.01, min(1_000_000, price * (1 + change / 100))), 2)
@@ -137,6 +182,11 @@ class MockMarketDataSource:
         for index, symbol in enumerate(symbols):
             if symbol in self._stocks:
                 stock = self._stocks[symbol]
+                if 'published_news' not in stock:
+                    stock['published_news'] = list({
+                        get_publication_id(report) for report in stock.get('news_reports', [])
+                    })
+                    changed = True
                 if 'base_price' not in stock:
                     stock['base_price'] = stock['price']
                     stock['goal_price'] = self._limit_news_goal(stock, stock['goal_price'])
@@ -156,6 +206,7 @@ class MockMarketDataSource:
                 'history_times': [now],
                 'chart_start': now,
                 'processed_news': [],
+                'published_news': [],
             }
             changed = True
         if changed:
@@ -289,6 +340,9 @@ class MockMarketDataSource:
         """Return quotes, histories, news, account data, and positions."""
         with self._lock:
             self._load_stocks(symbols)
+            self._expire_event()
+            if symbols and not self._event_active and monotonic() >= self._next_event_at:
+                self._set_event_active(True, symbols)
             self._update_prices()
             states = deepcopy(self._stocks)
             event = self._event_status()
@@ -350,7 +404,7 @@ class MarketService:
         return deepcopy(self._data_source.get_snapshot(self._symbol_loader()))
 
     def get_event(self):
-        """Read shared event status. Dependencies: data source. Side effects: none."""
+        """Read shared event status via the data source; overdue events restore saved goals."""
         return self._data_source.get_event()
 
     def set_event_active(self, active):
@@ -373,6 +427,14 @@ class MarketService:
     def initialize_news(self, symbol, articles):
         self.get_snapshot()
         return self._data_source.initialize_news(symbol, articles)
+
+    def has_published_news(self, publication_id, symbol=None):
+        """Read durable headline history via the data source; no side effects."""
+        return self._data_source.has_published_news(publication_id, symbol)
+
+    def publish_news(self, symbol, publication_id):
+        """Reserve a headline via the data source; storage failures propagate without publishing."""
+        return self._data_source.publish_news(symbol, publication_id)
 
     def apply_news_goal(self, symbol, article_id, previous_goal, new_goal, **details):
         return self._data_source.apply_news_goal(symbol, article_id, previous_goal, new_goal, **details)

@@ -49,7 +49,7 @@ Set `DEBUG=true` in `.env` to enable manual price goals and event controls; `DEB
 
 ## Simulation timing and balance
 
-Market prices update every 15 seconds, even when nobody has the page open. Yahoo news is checked for every configured stock about once per minute. The initial headlines for each stock are background information and do not change its goal. After that, genuinely new headlines are sent to Gemma.
+Market prices update every 15 seconds, even when nobody has the page open. Yahoo news is checked for every configured stock about once per minute. Unused headlines are queued and released one at a time every five seconds across the whole market. Headline history is saved, so the same headline cannot reappear after restarting, on another stock, or with a different date. Previously stored news reports are included in this history when upgrading. If Yahoo runs out of unused articles, the feed waits for more. The initial headlines for each stock are background information and do not change its goal. After that, genuinely new headlines are sent to Gemma when released.
 
 Gemma first checks whether an article is directly relevant to the stock and whether the same event has already been covered. Repeated and unrelated stories do not change the goal. For new relevant stories, Gemma picks good, bad, really good or bad, extremely good or bad, or neutral; the code chooses the percentage from the configured range.
 
@@ -59,8 +59,8 @@ On the home page, Start New Simulation asks before clearing this browser player'
 
 ## Market event pop-ups
 
-With `DEBUG=true`, use **TRIGGER EVENT** on the market page to start **Trump has woken up**. Everyone viewing the market receives the pop-up. Closing it lets you keep trading while the event continues.
+The Trump event starts automatically after a random five-to-ten-minute wait, including with debug disabled. Each event ends automatically after 50 seconds, then another random wait begins. With `DEBUG=true`, **TRIGGER EVENT** and **END EVENT** also control it manually. Everyone viewing the market receives compact, dismissible pop-ups saying **TRUMP HAS WAKEN UP!!!!** and **Trump went sleep.** Closing a pop-up lets you keep trading while the event continues.
 
-During the event, news fetching and AI goal changes pause, and regular price movement stops. Every second, each stock rolls a new goal relative to its current price: 75% unchanged, 24% up or down by 3–7%, and 1% up or down by 20–40%. If every goal would stay unchanged, one randomly chosen stock gets a 5% goal change instead. Prices move a quarter of the distance toward these goals each second; the percentages describe goals, not instant price jumps. Prices stay between $0.01 and $1,000,000.
+During the event, news fetching, headline releases, and AI goal changes pause, and regular price movement stops. Every second, each stock rolls a new goal relative to its current price: 75% unchanged, 24% up or down by 3–7%, and 1% up or down by 20–40%. If every goal would stay unchanged, one randomly chosen stock gets a 5% goal change instead. Prices move a quarter of the distance toward these goals each second; the percentages describe goals, not instant price jumps. Prices stay between $0.01 and $1,000,000.
 
-Use **END EVENT** to restore the previous goals, resume news processing, and return to 15-second updates. Queued news waits until the event ends. Restarting the app also ends the event, retaining the latest prices and restoring normal goals.
+The automatic timeout or **END EVENT** restores the previous goals, resumes news processing, and returns to 15-second updates. Queued news waits until the event ends. Restarting the app also ends the event, retaining the latest prices and restoring normal goals.

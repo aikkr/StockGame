@@ -63,11 +63,12 @@ async def market_page():
     news_items = list(market['news'])
     selected_news = {'article': None}
     event = dict(market['event'])
-    seen_event = {'id': 0}
+    seen_event = {'id': event['id'] if not event['active'] else 0, 'active': False}
 
     def show_event_popup():
-        if event['active'] and event['id'] != seen_event['id']:
-            seen_event['id'] = event['id']
+        if event['id'] != seen_event['id'] or event['active'] != seen_event['active']:
+            seen_event.update(id=event['id'], active=event['active'])
+            event_dialog_content.refresh()
             event_dialog.open()
 
     async def toggle_event():
@@ -122,8 +123,6 @@ async def market_page():
         event.clear()
         event.update(latest['event'])
         show_event_popup()
-        if not event['active']:
-            event_dialog.close()
         if latest['news'] != news_items:
             news_items[:] = latest['news']
             news_panel.refresh()
@@ -436,15 +435,20 @@ async def market_page():
         with ui.card().classes('news-dialog-card'):
             news_dialog_content()
 
-    with ui.dialog() as event_dialog:
-        with ui.card().classes('news-dialog-card'):
-            ui.label('Trump has woken up').classes('news-dialog-headline')
+    @ui.refreshable
+    def event_dialog_content():
+        phase = 'awake' if event['active'] else 'asleep'
+        with ui.card().classes(f'event-popup-card event-popup-{phase}'):
+            ui.button(icon='close', on_click=event_dialog.close).props(
+                'flat round dense aria-label="Close event popup"'
+            ).classes('event-popup-close')
+            ui.icon('campaign' if event['active'] else 'bedtime').classes('event-popup-icon')
             ui.label(
-                'News and normal price movement are paused. '
-                'Stock goals now change randomly every second, with rare extreme moves. '
-                'At least one stock moves each round.'
-            ).classes('news-dialog-body')
-            ui.button('BACK TO MARKET', on_click=event_dialog.close).classes('primary-button')
+                'TRUMP HAS WAKEN UP!!!!' if event['active'] else 'Trump went sleep.'
+            ).classes('event-popup-title')
+
+    with ui.dialog().classes('event-popup') as event_dialog:
+        event_dialog_content()
 
     @ui.refreshable
     def event_panel():

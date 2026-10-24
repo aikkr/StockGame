@@ -26,6 +26,7 @@ def home():
     home_page()
 
 
+
 @ui.page('/market')
 async def market():
     setup()

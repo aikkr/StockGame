@@ -63,6 +63,12 @@ body, .q-page { background: var(--bg); color: #f3f4f7; font-family: var(--font-u
 .news-dialog-separator { background: var(--line); }
 .news-dialog-body { font-size: 13px; line-height: 1.7; white-space: pre-wrap; }
 .news-dialog-link { align-self: flex-start; padding: 8px 13px; text-decoration: none; font-size: 9px; }
+.event-popup .q-dialog__backdrop { background: rgba(3, 7, 14, .76); backdrop-filter: blur(5px); }
+.event-popup-card { --event-accent: #ffcc33; position: relative; width: min(360px, calc(100vw - 32px)); padding: 28px 26px 26px; gap: 16px; align-items: center; border: 1px solid var(--event-accent); border-top: 4px solid var(--event-accent); border-radius: 16px; background: linear-gradient(145deg, #202735, #101620); color: #f3f4f7; box-shadow: 0 24px 80px #000b, 0 0 32px #ffcc331c; text-align: center; }
+.event-popup-asleep { --event-accent: #9caeff; box-shadow: 0 24px 80px #000b, 0 0 32px #9caeff1c; }
+.event-popup-icon { display: grid; place-items: center; width: 52px; height: 52px; border-radius: 50%; background: #ffffff0a; color: var(--event-accent); font-size: 30px; }
+.event-popup-title { font-family: var(--font-display); font-size: 22px; font-weight: 800; line-height: 1.25; letter-spacing: -.4px; text-wrap: balance; }
+.event-popup-close { position: absolute; top: 6px; right: 6px; color: var(--muted) !important; }
 .stocks-panel { width: 100%; padding: 10px; gap: 6px; flex: 1; min-height: 0; overflow: hidden; }
 .stock-list { width: 100%; min-height: 0; max-height: max(220px, calc(100vh - 300px)); overflow-y: auto; gap: 0; padding-right: 2px; }
 .search-input { width: 100%; background: var(--raised); border-radius: 5px; padding: 0 8px; }
