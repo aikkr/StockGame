@@ -1,13 +1,9 @@
-import logging
-import math
-import sqlite3
-
 from nicegui import ui
 
-from api import MarketApiError, get_market, get_news, set_goal_price, set_market_event
+from api import MarketApiError, get_market, set_goal_price, set_market_event
 from charts import stock_chart
 from components import change_badge, header, metric, plot
-from portfolio import TradeError, apply_trade, load_cash, load_portfolio, portfolio_value
+from portfolio import TradeError, apply_trade, portfolio_value
 from server import config
 from server.sessions import load_user, save_progress
 
@@ -31,39 +27,33 @@ async def market_page():
         return
 
     account = market['account']
-    stock_by_symbol = {stock['symbol']: stock for stock in stocks}
-    prices = {symbol: stock['price'] for symbol, stock in stock_by_symbol.items()}
+    stock_by_symbol = {}
+    prices = {}
+    for stock in stocks:
+        symbol = stock['symbol']
+        stock_by_symbol[symbol] = stock
+        prices[symbol] = stock['price']
     selected = stock_by_symbol.get(saved.get('selected_symbol'), stocks[0])
-    period = saved.get('period') if saved.get('period') in {'1D', '1W', '1M', '1Y'} else '1W'
-    side = saved.get('side') if saved.get('side') in {'BUY', 'SELL'} else 'BUY'
+    period = saved.get('period', '1W')
+    side = saved.get('side', 'BUY')
     quantity = saved.get('quantity', 50)
-    if (
-        isinstance(quantity, bool)
-        or not isinstance(quantity, (int, float))
-        or not math.isfinite(quantity)
-        or not 0 < quantity <= 1_000_000
-    ):
-        quantity = 50
     state = dict(
         stock=selected,
         period=period,
         search='',
         side=side,
         quantity=quantity,
-        cash=load_cash(saved.get('cash'), account['available_cash']),
+        cash=saved.get('cash', account['available_cash']),
     )
-    portfolio = load_portfolio(saved.get('portfolio'), set(stock_by_symbol))
-    saved_watchlist = saved.get('watchlist', [])
-    if not isinstance(saved_watchlist, list):
-        saved_watchlist = []
-    watchlist = {
-        symbol for symbol in saved_watchlist
-        if isinstance(symbol, str) and symbol in stock_by_symbol
-    }
+
+    portfolio = dict(saved.get('portfolio', {}))
+    watchlist = set(saved.get('watchlist', []))
     news_items = list(market['news'])
     selected_news = {'article': None}
     event = dict(market['event'])
-    seen_event = {'id': event['id'] if not event['active'] else 0, 'active': False}
+    seen_event = {'id': 0, 'active': False}
+    if not event['active']:
+        seen_event['id'] = event['id']
 
     def show_event_popup():
         if event['id'] != seen_event['id'] or event['active'] != seen_event['active']:
@@ -80,8 +70,6 @@ async def market_page():
         await refresh_market()
 
     def persist_progress():
-        if user['id'] == 0:
-            return True
         progress = {
             '_generation': saved.get('_generation'),
             'selected_symbol': state['stock']['symbol'],
@@ -97,22 +85,9 @@ async def market_page():
         except ValueError as error:
             ui.notify(str(error), type='negative')
             return False
-        except sqlite3.Error:
-            logging.getLogger(__name__).exception('Could not save player progress')
-            ui.notify('Progress could not be saved. Check database access and disk space.', type='negative')
-            return False
         saved.clear()
         saved.update(progress)
         return True
-
-    async def refresh_news():
-        try:
-            latest = await get_news()
-        except MarketApiError:
-            return
-        if latest['news'] != news_items:
-            news_items[:] = latest['news']
-            news_panel.refresh()
 
     async def refresh_market():
         try:
@@ -128,9 +103,11 @@ async def market_page():
             news_panel.refresh()
         if config.DEBUG and event_changed:
             event_panel.refresh()
-        prices_changed = any(
-            stock_by_symbol.get(stock['symbol']) != stock for stock in latest['stocks']
-        )
+        prices_changed = False
+        for stock in latest['stocks']:
+            if stock_by_symbol[stock['symbol']] != stock:
+                prices_changed = True
+                break
         if not prices_changed and not event_changed:
             return
         for updated in latest['stocks']:
@@ -169,15 +146,20 @@ async def market_page():
     @ui.refreshable
     def stock_list():
         search_text = state['search'].lower()
-        matches = [
-            stock for stock in stocks
-            if search_text in (stock['symbol'] + stock['name']).lower()
-        ]
+        matches = []
+        for stock in stocks:
+            company_text = (stock['symbol'] + stock['name']).lower()
+            if search_text in company_text:
+                matches.append(stock)
         with ui.column().classes('stock-list'):
             for stock in matches:
-                with ui.element('button').classes(
-                    'stock-row ' + ('active' if stock == state['stock'] else '')
-                ).on('click', lambda s=stock: select_stock(s)):
+                def choose_stock(stock=stock):
+                    select_stock(stock)
+
+                row_class = 'stock-row'
+                if stock == state['stock']:
+                    row_class += ' active'
+                with ui.element('button').classes(row_class).on('click', choose_stock):
                     with ui.column().classes('stock-name'):
                         ui.label(stock['symbol']).classes('mono')
                         ui.label(stock['name']).classes('muted stock-subtitle')
@@ -200,9 +182,10 @@ async def market_page():
                 with ui.column().classes('quote'):
                     ui.label(f"${stock['price']:,.2f}").classes('quote-price mono green')
                     change = stock['price'] - stock['price'] / (1 + stock['change'] / 100)
-                    ui.label(f"{change:+.2f} ({stock['change']:+.2f}%)").classes(
-                        'mono ' + ('green' if change >= 0 else 'red')
-                    )
+                    color = 'green'
+                    if change < 0:
+                        color = 'red'
+                    ui.label(f"{change:+.2f} ({stock['change']:+.2f}%)").classes('mono ' + color)
             plot(stock_chart(stock, state['period']), 'market-chart')
 
     def set_side(side):
@@ -225,15 +208,6 @@ async def market_page():
 
     async def execute():
         quantity = state['quantity']
-        if (
-            isinstance(quantity, bool)
-            or not isinstance(quantity, (int, float))
-            or quantity <= 0
-            or quantity > 1_000_000
-            or not float(quantity).is_integer()
-        ):
-            ui.notify('Enter a positive whole number of shares.', type='warning')
-            return
         stock = state['stock']
         previous_cash = state['cash']
         previous_portfolio = dict(portfolio)
@@ -243,7 +217,7 @@ async def market_page():
                 state['cash'],
                 stock['symbol'],
                 state['side'],
-                int(quantity),
+                quantity,
                 stock['price'],
                 account['handling_fee'],
             )
@@ -271,9 +245,13 @@ async def market_page():
         with ui.column().classes('panel order-panel'):
             with ui.row().classes('side-tabs'):
                 for side in ['BUY', 'SELL']:
-                    ui.button(side, color=None, on_click=lambda s=side: set_side(s)).props('flat').classes(
-                        'side-tab ' + ('side-active' if state['side'] == side else '')
-                    )
+                    def choose_side(side=side):
+                        set_side(side)
+
+                    button_class = 'side-tab'
+                    if state['side'] == side:
+                        button_class += ' side-active'
+                    ui.button(side, color=None, on_click=choose_side).props('flat').classes(button_class)
             with ui.row().classes('spread quantity-label'):
                 ui.label('QUANTITY (SHARES)').classes('caption')
                 if state['side'] == 'BUY':
@@ -283,13 +261,15 @@ async def market_page():
                 ui.label(f'MAX ({max_shares} Shares)').classes('yellow mono')
 
             def update_quantity(event):
-                """Update estimated order value after quantity input changes."""
-                if event.value is None or not math.isfinite(event.value):
+                if event.value is None:
                     return
                 state['quantity'] = event.value
                 persist_progress()
                 total = (event.value or 0) * stock['price']
-                total += handling_fee if state['side'] == 'BUY' else -handling_fee
+                if state['side'] == 'BUY':
+                    total += handling_fee
+                else:
+                    total -= handling_fee
                 cost.set_text(f'${max(0, total):,.2f}')
 
             quantity = ui.number(
@@ -303,14 +283,20 @@ async def market_page():
                     ui.label('Current Stock Price').classes('muted')
                     ui.label(f"${stock['price']:,.2f}").classes('mono')
                 with ui.row().classes('spread estimated yellow'):
-                    ui.label('COST' if state['side'] == 'BUY' else 'PROCEEDS')
-                    fee = handling_fee if state['side'] == 'BUY' else -handling_fee
+                    if state['side'] == 'BUY':
+                        ui.label('COST')
+                        fee = handling_fee
+                    else:
+                        ui.label('PROCEEDS')
+                        fee = -handling_fee
                     estimated = max(0, (state['quantity'] or 0) * stock['price'] + fee)
                     cost = ui.label(f'${estimated:,.2f}').classes('mono')
             ui.button('EXECUTE SIMULATED ORDER', color=None, on_click=execute).classes(
                 'primary-button execute-button'
             )
-            button_text = 'REMOVE FROM WATCHLIST' if stock['symbol'] in watchlist else 'ADD TO WATCHLIST'
+            button_text = 'ADD TO WATCHLIST'
+            if stock['symbol'] in watchlist:
+                button_text = 'REMOVE FROM WATCHLIST'
             ui.button(button_text, icon='star_border', color=None, on_click=toggle_watchlist).props(
                 'flat'
             ).classes('watch-button')
@@ -325,9 +311,10 @@ async def market_page():
                 for stock in stocks:
                     if stock['symbol'] not in watchlist:
                         continue
-                    with ui.element('button').classes('stock-row').on(
-                        'click', lambda s=stock: select_stock(s)
-                    ):
+                    def choose_watched_stock(stock=stock):
+                        select_stock(stock)
+
+                    with ui.element('button').classes('stock-row').on('click', choose_watched_stock):
                         with ui.column().classes('stock-name'):
                             ui.label(stock['symbol']).classes('mono')
                             ui.label(stock['name']).classes('muted stock-subtitle')
@@ -372,11 +359,14 @@ async def market_page():
                 with ui.row().classes('position-title'):
                     ui.icon('work', size='12px').classes('yellow')
                     ui.label('YOUR POSITION DETAILS').classes('section-title')
-                ui.label('HOLDING ACTIVE' if shares else 'NO POSITION').classes('holding mono')
+                holding_text = 'NO POSITION'
+                if shares:
+                    holding_text = 'HOLDING ACTIVE'
+                ui.label(holding_text).classes('holding mono')
             with ui.element('div').classes('position-metrics'):
                 if shares:
                     market_value = shares * state['stock']['price']
-                    holdings_value = sum(prices[ticker] * amount for ticker, amount in portfolio.items())
+                    holdings_value = portfolio_value(portfolio, prices, 0)
                     values = [
                         ('SHARES OWNED', f'{shares} Units', ''),
                         ('CURRENT PRICE', f"${state['stock']['price']:,.2f}", ''),
@@ -397,8 +387,11 @@ async def market_page():
         with ui.column().classes('panel news-panel'):
             ui.label('Market Wire (Live)').classes('section-title')
             for article in news_items:
+                def read_article(article=article):
+                    open_news(article)
+
                 with ui.element('button').classes('news-item').on(
-                    'click', lambda current=article: open_news(current)
+                    'click', read_article
                 ):
                     with ui.row().classes('news-meta'):
                         ui.label(article.get('symbol', '')).classes('yellow mono')
@@ -417,9 +410,11 @@ async def market_page():
             ui.button(icon='close', on_click=news_dialog.close).props(
                 'flat round dense aria-label="Close article"'
             ).classes('news-dialog-close')
-        metadata = ' • '.join(
-            value for value in (article.get('provider', ''), article.get('date', '')) if value
-        )
+        metadata_parts = []
+        for value in (article.get('provider', ''), article.get('date', '')):
+            if value:
+                metadata_parts.append(value)
+        metadata = ' • '.join(metadata_parts)
         if metadata:
             ui.label(metadata).classes('muted news-dialog-meta')
         ui.separator().classes('news-dialog-separator')
@@ -437,15 +432,20 @@ async def market_page():
 
     @ui.refreshable
     def event_dialog_content():
-        phase = 'awake' if event['active'] else 'asleep'
+        if event['active']:
+            phase = 'awake'
+            icon = 'campaign'
+            title = 'TRUMP HAS WAKEN UP!!!!'
+        else:
+            phase = 'asleep'
+            icon = 'bedtime'
+            title = 'Trump went sleep.'
         with ui.card().classes(f'event-popup-card event-popup-{phase}'):
             ui.button(icon='close', on_click=event_dialog.close).props(
                 'flat round dense aria-label="Close event popup"'
             ).classes('event-popup-close')
-            ui.icon('campaign' if event['active'] else 'bedtime').classes('event-popup-icon')
-            ui.label(
-                'TRUMP HAS WAKEN UP!!!!' if event['active'] else 'Trump went sleep.'
-            ).classes('event-popup-title')
+            ui.icon(icon).classes('event-popup-icon')
+            ui.label(title).classes('event-popup-title')
 
     with ui.dialog().classes('event-popup') as event_dialog:
         event_dialog_content()
@@ -454,13 +454,13 @@ async def market_page():
     def event_panel():
         with ui.column().classes('panel debug-panel'):
             ui.label('Trump has woken up').classes('yellow')
-            ui.button(
-                'END EVENT' if event['active'] else 'TRIGGER EVENT', on_click=toggle_event,
-            ).classes('primary-button')
+            button_text = 'TRIGGER EVENT'
+            if event['active']:
+                button_text = 'END EVENT'
+            ui.button(button_text, on_click=toggle_event).classes('primary-button')
 
     @ui.refreshable
     def account_header():
-        """Render account totals calculated from client-side portfolio state."""
         header(
             active=True,
             portfolio_value=portfolio_value(portfolio, prices, state['cash']),
@@ -473,8 +473,11 @@ async def market_page():
             news_panel()
             with ui.column().classes('panel stocks-panel'):
                 ui.label('Stocks').classes('section-title')
+                def search_changed(event):
+                    filter_stocks(event.value)
+
                 search = ui.input(
-                    placeholder='Search assets...', on_change=lambda e: filter_stocks(e.value)
+                    placeholder='Search assets...', on_change=search_changed
                 ).props('dense borderless').classes('search-input')
                 with search.add_slot('prepend'):
                     ui.icon('search', size='14px')
@@ -489,6 +492,5 @@ async def market_page():
                 event_panel()
                 debug_panel()
 
-    ui.timer(10, refresh_news)
     ui.timer(1, refresh_market)
     show_event_popup()

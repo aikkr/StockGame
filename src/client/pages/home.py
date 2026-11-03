@@ -1,15 +1,14 @@
-"""Render the Stockgame landing page."""
-
 from nicegui import ui
-import sqlite3
 
 from charts import integrity_chart
 from components import header, metric, plot
 from server.sessions import load_user, reset_progress
 
 def menu_item(number, title, subtitle, action, highlighted=False):
-    """Render a landing-page navigation action."""
-    with ui.element('button').classes('menu-item' + (' highlighted' if highlighted else '')).on('click', action):
+    css_class = 'menu-item'
+    if highlighted:
+        css_class += ' highlighted'
+    with ui.element('button').classes(css_class).on('click', action):
         with ui.column().classes('menu-copy'):
             ui.label(f'{number}. {title}').classes('mono menu-title')
             ui.label(subtitle).classes('muted')
@@ -17,15 +16,13 @@ def menu_item(number, title, subtitle, action, highlighted=False):
 
 
 def home_page():
-    """Render the landing page and its saved-progress reset confirmation."""
     user, _ = load_user()
 
+    def continue_game():
+        ui.navigate.to('/market')
+
     def start_new_simulation():
-        try:
-            reset_progress(user['id'])
-        except sqlite3.Error:
-            ui.notify('Could not clear saved progress. Check the database.', type='negative')
-            return
+        reset_progress(user['id'])
         ui.navigate.to('/market')
 
     with ui.dialog() as reset_dialog:
@@ -45,7 +42,7 @@ def home_page():
                      'Backtest logic, watch breaking news tickers, and gain complete sovereignty over simulated wealth.').classes('hero-description muted')
             with ui.column().classes('home-menu'):
                 menu_item(1, 'START NEW SIMULATION', 'Reset your saved player progress', reset_dialog.open, True)
-                menu_item(2, 'CONTINUE CURRENT SESSION', 'Resume simulated portfolio with active holdings', lambda: ui.navigate.to('/market'))
+                menu_item(2, 'CONTINUE CURRENT SESSION', 'Resume simulated portfolio with active holdings', continue_game)
         with ui.column().classes('panel engine-panel'):
             with ui.row().classes('engine-status'):
                 ui.label('● ALL ENGINE SIMULATORS ONLINE').classes('green mono')
