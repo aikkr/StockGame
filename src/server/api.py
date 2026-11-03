@@ -7,8 +7,7 @@ from server.news import get_news, get_news_status
 
 
 @app.post('/api/market/event')
-def set_market_event(data: dict) -> dict:
-    """Change the shared event via the market service; disabled debug tools return 403."""
+def set_market_event(data: dict):
     if not config.DEBUG:
         raise HTTPException(status_code=403, detail='Debug tools are disabled.')
     try:
@@ -18,7 +17,7 @@ def set_market_event(data: dict) -> dict:
 
 
 @app.get('/api/market')
-def get_market() -> dict:
+def get_market():
     snapshot = market_service.get_snapshot()
     snapshot['news'] = get_news()
     snapshot['news_status'] = get_news_status()
@@ -26,17 +25,16 @@ def get_market() -> dict:
 
 
 @app.get('/api/news')
-def get_latest_news() -> dict:
+def get_latest_news():
     return {'news': get_news(), 'status': get_news_status()}
 
 
 @app.post('/api/market/goal')
-def set_goal_price(data: dict) -> dict:
-    """Set a shared goal via the market service; disabled debug tools return 403."""
+def set_goal_price(data: dict):
     if not config.DEBUG:
         raise HTTPException(status_code=403, detail='Debug tools are disabled.')
     try:
         goal_price = market_service.set_goal_price(data.get('symbol'), data.get('goal_price'))
-    except (AttributeError, ValueError) as error:
+    except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     return {'goal_price': goal_price}

@@ -1,16 +1,15 @@
 import json
 import os
-import re
 import secrets
 from pathlib import Path
 
 from dotenv import load_dotenv, set_key
 
-_SYMBOL_PATTERN = re.compile(r'^[A-Z0-9][A-Z0-9.-]{0,14}$')
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 ENV_PATH = PROJECT_ROOT / '.env'
 load_dotenv(ENV_PATH)
-DEBUG = os.getenv('DEBUG', 'false').strip().lower() == 'true'
+DEBUG = os.getenv('DEBUG', 'false').lower() == 'true'
 
 
 def get_storage_secret():
@@ -22,23 +21,16 @@ def get_storage_secret():
     return secret
 
 
-def get_stock_symbols() -> tuple[str, ...]:
-    raw_stocks = os.getenv('STOCKS', 'MSFT,AAPL,NVDA').strip()
-    try:
-        parsed = json.loads(raw_stocks)
-    except json.JSONDecodeError:
-        parsed = [symbol.strip() for symbol in raw_stocks.split(',')]
-
-    if isinstance(parsed, str):
-        parsed = [parsed]
-    if not isinstance(parsed, list):
-        return ()
+def get_stock_symbols():
+    text = os.getenv('STOCKS', 'MSFT,AAPL,NVDA').strip()
+    if text.startswith('['):
+        names = json.loads(text)
+    else:
+        names = text.split(',')
 
     symbols = []
-    for value in parsed:
-        if not isinstance(value, str):
-            continue
-        symbol = value.strip().upper()
-        if _SYMBOL_PATTERN.fullmatch(symbol) and symbol not in symbols:
+    for name in names:
+        symbol = name.strip().upper()
+        if symbol and symbol not in symbols:
             symbols.append(symbol)
     return tuple(symbols)
