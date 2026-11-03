@@ -1,31 +1,28 @@
 import json
 import os
-import random
 import secrets
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterator
 
 from server.config import PROJECT_ROOT
 
 
 class UserDatabase:
-    def __init__(self, path: str | Path | None = None):
+    def __init__(self, path=None):
         configured_path = path or os.getenv('STOCKGAME_DB_PATH')
-        self.path = (
-            Path(configured_path)
-            if configured_path
-            else Path(__file__).with_name('stockgame.db')
-        )
+        if configured_path:
+            self.path = Path(configured_path)
+        else:
+            self.path = Path(__file__).with_name('stockgame.db')
         if not self.path.is_absolute():
             self.path = PROJECT_ROOT / self.path
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._create_tables()
 
     @contextmanager
-    def _connect(self) -> Iterator[sqlite3.Connection]:
+    def _connect(self):
         connection = sqlite3.connect(self.path, timeout=10)
         connection.row_factory = sqlite3.Row
         connection.execute('PRAGMA foreign_keys = ON')
@@ -38,7 +35,7 @@ class UserDatabase:
         finally:
             connection.close()
 
-    def _create_tables(self) -> None:
+    def _create_tables(self):
         with self._connect() as connection:
             connection.executescript(
                 '''
@@ -69,61 +66,38 @@ class UserDatabase:
                 '''
             )
 
-    def _generateId(self) -> int:
-        while True:
-            user_id = random.SystemRandom().randint(100000000, 999999999)
-            with self._connect() as connection:
-                exists = connection.execute('SELECT 1 FROM users WHERE id = ?', (user_id,)).fetchone()
-            if not exists:
-                return user_id
-
-    def addUser(self, name: str) -> dict:
+    def addUser(self, name):
         now = datetime.now(timezone.utc).isoformat()
-        user = {
-            'id': self._generateId(),
-            'name': name,
-            'creationTime': now,
-            'lastLogin': now,
-            'saves': {},
-        }
         with self._connect() as connection:
-            connection.execute(
-                'INSERT INTO users (id, name, creation_time, last_login) VALUES (?, ?, ?, ?)',
-                (user['id'], user['name'], now, now),
-            )
-        return user
 
-    def getUser(self, user_id: int) -> dict | None:
+            result = connection.execute(
+                'INSERT INTO users (name, creation_time, last_login) VALUES (?, ?, ?)',
+                (name, now, now),
+            )
+            user_id = result.lastrowid
+        return {'id': user_id, 'name': name, 'creationTime': now, 'lastLogin': now}
+
+    def getUser(self, user_id):
         with self._connect() as connection:
             row = connection.execute('SELECT * FROM users WHERE id = ?', (user_id,)).fetchone()
             if row is None:
                 return None
-            save_rows = connection.execute(
-                'SELECT save_name, data FROM saves WHERE user_id = ?', (user_id,)
-            ).fetchall()
-        saves = {}
-        for save in save_rows:
-            try:
-                saves[save['save_name']] = json.loads(save['data'])
-            except json.JSONDecodeError:
-                continue
         return {
             'id': row['id'],
             'name': row['name'],
             'creationTime': row['creation_time'],
             'lastLogin': row['last_login'],
-            'saves': saves,
         }
 
-    def login(self, user_id: int) -> None:
+    def login(self, user_id):
         with self._connect() as connection:
             connection.execute(
                 'UPDATE users SET last_login = ? WHERE id = ?',
                 (datetime.now(timezone.utc).isoformat(), user_id),
             )
 
-    def addSave(self, user_id: int, save_name: str, stocks: dict, expected=None) -> None:
-        data = json.dumps(stocks, separators=(',', ':'), allow_nan=False)
+    def addSave(self, user_id, save_name, stocks, expected=None):
+        data = json.dumps(stocks)
         with self._connect() as connection:
             if expected is not None:
                 connection.execute('BEGIN IMMEDIATE')
@@ -131,7 +105,9 @@ class UserDatabase:
                     'SELECT data FROM saves WHERE user_id = ? AND save_name = ?',
                     (user_id, save_name),
                 ).fetchone()
-                current = json.loads(row['data']) if row else {}
+                current = {}
+                if row:
+                    current = json.loads(row['data'])
                 if current != expected:
                     raise ValueError('Progress changed in another tab. Refresh this page before continuing.')
             connection.execute(
@@ -142,7 +118,7 @@ class UserDatabase:
                 (user_id, save_name, data),
             )
 
-    def getSave(self, user_id: int, save_name: str) -> dict | None:
+    def getSave(self, user_id, save_name):
         with self._connect() as connection:
             row = connection.execute(
                 'SELECT data FROM saves WHERE user_id = ? AND save_name = ?',
@@ -150,21 +126,10 @@ class UserDatabase:
             ).fetchone()
         if row is None:
             return None
-        try:
-            value = json.loads(row['data'])
-        except json.JSONDecodeError:
-            return None
-        return value if isinstance(value, dict) else None
-
-    def deleteSave(self, user_id: int, save_name: str) -> None:
-        with self._connect() as connection:
-            connection.execute(
-                'DELETE FROM saves WHERE user_id = ? AND save_name = ?',
-                (user_id, save_name),
-            )
+        return json.loads(row['data'])
 
     def save_market(self, stocks):
-        data = json.dumps(stocks, allow_nan=False)
+        data = json.dumps(stocks)
         with self._connect() as connection:
             connection.execute(
                 'INSERT INTO market_state (id, data) VALUES (1, ?) '
@@ -175,9 +140,11 @@ class UserDatabase:
     def load_market(self):
         with self._connect() as connection:
             row = connection.execute('SELECT data FROM market_state WHERE id = 1').fetchone()
-        return json.loads(row['data']) if row else {}
+        if row:
+            return json.loads(row['data'])
+        return {}
 
-    def addSession(self, user_id: int) -> str:
+    def addSession(self, user_id):
         token = secrets.token_urlsafe(32)
         now = datetime.now(timezone.utc).isoformat()
         with self._connect() as connection:
@@ -187,8 +154,8 @@ class UserDatabase:
             )
         return token
 
-    def getUserBySession(self, token: str | None) -> dict | None:
-        if not token or not isinstance(token, str):
+    def getUserBySession(self, token):
+        if not token:
             return None
         now = datetime.now(timezone.utc).isoformat()
         with self._connect() as connection:

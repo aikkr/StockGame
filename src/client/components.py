@@ -1,9 +1,7 @@
-"""Render small shared UI components without owning market data."""
 from nicegui import ui
 
 
 def header(active=False, portfolio_value=None, available_cash=None):
-    """Render the navigation header with optional API-provided account values."""
     with ui.element('header').classes('topbar'):
         with ui.link(target='/').classes('brand'):
             with ui.element('span').classes('brand-icon'):
@@ -16,24 +14,27 @@ def header(active=False, portfolio_value=None, available_cash=None):
             ]:
                 with ui.column().classes('header-stat'):
                     ui.label(title).classes('caption')
-                    ui.label(f'${value:,.2f}' if active else '-- --').classes(f'mono {color}')
+                    value_text = '-- --'
+                    if active:
+                        value_text = f'${value:,.2f}'
+                    ui.label(value_text).classes(f'mono {color}')
             ui.label('◈').classes('avatar').tooltip('Demo player')
 
 
 def metric(title, value, color=''):
-    """Render one title/value metric tile."""
     with ui.column().classes('metric'):
         ui.label(title).classes('caption')
         ui.label(value).classes(f'mono metric-value {color}')
 
 
 def change_badge(value):
-    """Render a signed percentage with direction-aware styling."""
-    ui.label(f'{value:+.2f}%').classes('change ' + ('positive' if value >= 0 else 'negative'))
+    color = 'positive'
+    if value < 0:
+        color = 'negative'
+    ui.label(f'{value:+.2f}%').classes('change ' + color)
 
 
 def plot(figure, css_class):
-    """Render a Plotly figure with the application's shared configuration."""
     options = figure.to_plotly_json()
     options['config'] = dict(displayModeBar=False, responsive=True)
     return ui.plotly(options).classes(css_class)

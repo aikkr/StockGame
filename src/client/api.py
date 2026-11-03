@@ -3,46 +3,31 @@ from nicegui import app
 
 
 class MarketApiError(RuntimeError):
-    """Represent a server API failure that the UI can display safely.
-
-    Dependencies: an unsuccessful API response or transport exception.
-    Side effects: none.
-    Failure impact: callers should show a non-sensitive error state.
-    """
+    pass
 
 
-async def get_market() -> dict:
-    """Load the current server-owned market snapshot."""
+async def get_market():
     return await _request('GET', '/api/market')
 
 
-async def get_news() -> dict:
-    """Load the latest news feed without refreshing the page."""
-    return await _request('GET', '/api/news')
-
-
-async def set_goal_price(symbol: str, goal_price: float) -> float:
-    result = await _request('POST', '/api/market/goal', json={
+async def set_goal_price(symbol, goal_price):
+    result = await _request('POST', '/api/market/goal', {
         'symbol': symbol,
         'goal_price': goal_price,
     })
     return result['goal_price']
 
 
-async def set_market_event(active: bool) -> dict:
-    """Toggle the shared event through HTTP; API failures raise MarketApiError.
-
-    Dependencies: local market API. Side effects: pauses/resumes the simulation.
-    """
-    return await _request('POST', '/api/market/event', json={'active': active})
+async def set_market_event(active):
+    return await _request('POST', '/api/market/event', {'active': active})
 
 
-async def _request(method: str, path: str, **kwargs) -> dict:
+async def _request(method, path, data=None):
     transport = httpx.ASGITransport(app=app)
     try:
         async with httpx.AsyncClient(transport=transport, base_url='http://stockgame.local') as client:
-            response = await client.request(method, path, **kwargs)
+            response = await client.request(method, path, json=data)
             response.raise_for_status()
             return response.json()
-    except (httpx.HTTPError, ValueError, KeyError) as error:
+    except httpx.HTTPError as error:
         raise MarketApiError('The market service is currently unavailable.') from error

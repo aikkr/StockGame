@@ -18,15 +18,13 @@ NEWS_RATINGS = list(NEWS_CHANGES)
 
 
 def validate_news_rating(result):
-    if not isinstance(result, dict):
-        raise ValueError('AI response must be an object.')
-    rating = result.get('rating')
-    if not isinstance(rating, str) or rating not in NEWS_RATINGS:
+    rating = result['rating']
+    if rating not in NEWS_RATINGS:
         raise ValueError('AI must choose a valid news category.')
-    reason = result.get('reason')
-    if not isinstance(reason, str) or not reason.strip():
+    reason = result['reason'].strip()
+    if not reason:
         raise ValueError('AI must explain the price change.')
-    return rating, reason.strip()[:500]
+    return rating, reason[:500]
 
 
 def choose_price_change(rating):
@@ -93,15 +91,18 @@ async def check_news_impact(news):
         'required': ['decision', 'reason'],
         'additionalProperties': False,
     }
+    previous_events = []
+    for item in news['recent_news']:
+        previous_events.append(item['headline'])
     context = {
         'target_company': news['company_name'],
         'article': news['headline'] + '. ' + news['summary'],
-        'previous_events': [item['headline'] for item in news['recent_news']],
+        'previous_events': previous_events,
     }
     result = await ask_gemma(instructions, context, schema)
-    if not isinstance(result, dict) or result.get('decision') not in ('new', 'repeat', 'unrelated'):
+    if result['decision'] not in ('new', 'repeat', 'unrelated'):
         raise ValueError('AI must explain whether the news is new and relevant.')
-    if not isinstance(result.get('reason'), str) or not result['reason'].strip():
+    if not result['reason'].strip():
         raise ValueError('AI must explain its relevance decision.')
     result['reason'] = result['reason'].strip()[:500]
     return result
@@ -121,6 +122,4 @@ async def ask_gemma(instructions, news, schema):
         response = await client.post(f'{address}/api/generate', json=request)
         response.raise_for_status()
     payload = response.json()
-    if not isinstance(payload, dict) or not isinstance(payload.get('response'), str):
-        raise ValueError('Ollama returned no AI response.')
     return json.loads(payload['response'])

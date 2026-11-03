@@ -1,14 +1,22 @@
-"""Build Plotly figures from values supplied by the server API."""
 import plotly.graph_objects as go
 from datetime import datetime
 
 
 def line_chart(values, color, background, market=False, times=None, window=None):
-    """Create a line figure without mutating the supplied data."""
+    if market:
+        x_values = times
+        line_width = 2
+        hover_text = '%{x|%H:%M:%S}<br>$%{y:,.2f}<extra></extra>'
+        left_margin = 42
+    else:
+        x_values = list(range(len(values)))
+        line_width = 1.3
+        hover_text = '$%{y:,.2f}<extra></extra>'
+        left_margin = 12
     figure = go.Figure(go.Scatter(
-        x=times if market else list(range(len(values))), y=values, mode='lines',
-        line=dict(color=color, width=2 if market else 1.3),
-        hovertemplate='%{x|%H:%M:%S}<br>$%{y:,.2f}<extra></extra>' if market else '$%{y:,.2f}<extra></extra>',
+        x=x_values, y=values, mode='lines',
+        line=dict(color=color, width=line_width),
+        hovertemplate=hover_text,
     ))
     if market:
         figure.add_trace(go.Scatter(
@@ -17,7 +25,7 @@ def line_chart(values, color, background, market=False, times=None, window=None)
         ))
     figure.update_layout(
         template=None, paper_bgcolor=background, plot_bgcolor=background,
-        showlegend=False, margin=dict(l=42 if market else 12, r=18, t=20, b=22),
+        showlegend=False, margin=dict(l=left_margin, r=18, t=20, b=22),
         font=dict(family='Inter, Arial, sans-serif', size=9, color='#7e8897'),
         hovermode='x unified', dragmode=False,
         xaxis=dict(showgrid=False, zeroline=False, fixedrange=True),
@@ -38,8 +46,9 @@ def line_chart(values, color, background, market=False, times=None, window=None)
 
 
 def stock_chart(stock, period):
-    """Create the selected stock's chart from its API-provided history."""
-    times = [datetime.fromtimestamp(value).isoformat() for value in stock['history_times']]
+    times = []
+    for value in stock['history_times']:
+        times.append(datetime.fromtimestamp(value).isoformat())
     window = [
         datetime.fromtimestamp(stock['chart_start']).isoformat(),
         datetime.fromtimestamp(stock['chart_end']).isoformat(),
@@ -51,5 +60,4 @@ def stock_chart(stock, period):
 
 
 def integrity_chart():
-    """Create the static landing-page engine integrity illustration."""
     return line_chart([65, 72, 68, 85, 59, 64], '#bd9600', '#181e29')

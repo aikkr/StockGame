@@ -1,5 +1,4 @@
 import asyncio
-import hashlib
 import logging
 from collections import deque
 from datetime import datetime
@@ -28,12 +27,10 @@ logger = logging.getLogger(__name__)
 
 
 def get_news():
-    """Read the five latest released headlines from memory; no side effects or dependencies."""
     return list(_news_items)[:5]
 
 
 def get_news_status():
-    """Read feed and AI status using the market service; overdue events may be ended."""
     if market_service.get_event()['active']:
         return {
             'feed': 'News paused: Trump has woken up.',
@@ -44,20 +41,25 @@ def get_news_status():
 
 
 def get_article_id(symbol, article):
-    """Hash a stock article for AI deduplication using hashlib; no side effects."""
     headline = article['headline'].strip().casefold()
-    identity = headline + ':' + article.get('date', '')
-    return hashlib.sha256(f'{symbol}:{identity}'.encode()).hexdigest()
+    return symbol + ':' + headline + ':' + article.get('date', '')
 
 
 def queue_articles(symbol, articles):
-    """Stage unseen Yahoo headlines using market history; storage failures leave them unpublished."""
     if market_service.get_event()['active']:
         return 0
-    items = [dict(article, id=get_article_id(symbol, article)) for article in articles]
+    items = []
+    for article in articles:
+        item = dict(article)
+        item['id'] = get_article_id(symbol, article)
+        items.append(item)
     market_service.initialize_news(symbol, items)
-    stock = next(stock for stock in market_service.get_snapshot()['stocks'] if stock['symbol'] == symbol)
-    reports = {report['id']: report for report in stock['news_reports']}
+    for stock in market_service.get_snapshot()['stocks']:
+        if stock['symbol'] == symbol:
+            break
+    reports = {}
+    for report in stock['news_reports']:
+        reports[report['id']] = report
     queued = 0
     for article in reversed(items):
         article_id = article['id']
@@ -86,10 +88,6 @@ def queue_articles(symbol, articles):
 
 
 def publish_next_article():
-    """Release one unused headline per five seconds; uses durable history and queues AI work.
-
-    Side effects: saves publication history and updates the feed; failed saves retain the article.
-    """
     global _next_publication_at
     now = monotonic()
     if market_service.get_event()['active']:
@@ -119,17 +117,12 @@ def publish_next_article():
 
 
 async def release_news():
-    """Drive the five-second feed independently of Yahoo and AI; logs failures and retries next tick."""
     while True:
-        try:
-            publish_next_article()
-        except Exception:
-            logger.exception('Could not publish the next headline')
+        publish_next_article()
         await asyncio.sleep(0.1)
 
 
 async def fetch_stock_news(symbol, limit):
-    """Fetch Yahoo articles in a worker thread; discard responses crossing an event transition."""
     async with limit:
         event = market_service.get_event()
         if event['active']:
@@ -147,7 +140,6 @@ async def fetch_stock_news(symbol, limit):
 
 
 async def update_news():
-    """Refill the unused headline queue from Yahoo each minute; pauses fetches during events."""
     global _feed_status
     while True:
         if market_service.get_event()['active']:
@@ -160,9 +152,17 @@ async def update_news():
             await asyncio.sleep(10)
             continue
         limit = asyncio.Semaphore(4)
-        results = await asyncio.gather(*(fetch_stock_news(symbol, limit) for symbol in symbols))
-        count = sum(result[0] for result in results)
-        available = sum(result[1] for result in results)
+        tasks = []
+        for symbol in symbols:
+            tasks.append(fetch_stock_news(symbol, limit))
+
+        results = await asyncio.gather(*tasks)
+        count = 0
+        available = 0
+        for queued, has_articles in results:
+            count += queued
+            if has_articles:
+                available += 1
         checked = datetime.now().strftime('%H:%M:%S')
         _feed_status = (
             f'Checked {checked}: {available}/{len(symbols)} feeds, {count} unused articles. '
@@ -173,10 +173,7 @@ async def update_news():
 
 async def update_market_prices():
     while True:
-        try:
-            await asyncio.to_thread(market_service.get_snapshot)
-        except Exception:
-            logger.exception('Could not update market prices')
+        await asyncio.to_thread(market_service.get_snapshot)
         await asyncio.sleep(1)
 
 
@@ -188,12 +185,13 @@ async def process_article(item):
     if market_service.has_processed_news(symbol, article_id):
         return True
     snapshot = market_service.get_snapshot()
-    stock = next(stock for stock in snapshot['stocks'] if stock['symbol'] == symbol)
+    for stock in snapshot['stocks']:
+        if stock['symbol'] == symbol:
+            break
     previous_goal = stock['goal_price']
-    recent_news = [
-        {'headline': report['headline'], 'reason': report['reason']}
-        for report in stock['news_reports'][:10]
-    ]
+    recent_news = []
+    for report in stock['news_reports'][:10]:
+        recent_news.append({'headline': report['headline'], 'reason': report['reason']})
     goal, reason = await get_news_goal(
         symbol, previous_goal, item,
         company_name=stock['name'], recent_news=recent_news,
@@ -209,8 +207,12 @@ async def process_article(item):
         symbol, article_id, previous_goal, goal,
         expected_revision=stock['goal_revision'], report=report,
     )
-    updated = next(stock for stock in market_service.get_snapshot()['stocks'] if stock['symbol'] == symbol)
-    applied = next(report for report in updated['news_reports'] if report['id'] == article_id)
+    for updated in market_service.get_snapshot()['stocks']:
+        if updated['symbol'] == symbol:
+            break
+    for applied in updated['news_reports']:
+        if applied['id'] == article_id:
+            break
     item['ai_reason'] = reason
     item['goal_price'] = applied['goal_price']
     for displayed in _news_items:
@@ -246,7 +248,6 @@ async def update_goals():
 
 
 def start_news_updates():
-    """Start NiceGUI background feed, AI and market workers; depends on the running app lifecycle."""
     if not _update_tasks:
         _update_tasks.append(background_tasks.create(update_news(), name='stock-news-updater'))
         _update_tasks.append(background_tasks.create(release_news(), name='stock-news-publisher'))
