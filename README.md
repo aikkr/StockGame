@@ -50,5 +50,3 @@ python src/client/main.py
 Open http://127.0.0.1:8080.
 
 Set `DEBUG=true` in `.env` to enable manual price goals and event controls; `DEBUG=false` (the default) hides them and disables their API actions. Restart the app after changing this setting.
-
-Market Wire fetches Yahoo Finance headlines every minute and releases one headline every five seconds, keeping the latest five visible. Unread headlines take priority. When unread stories run out, recent stories rotate across available companies and are labelled "Previously read". Every displayed release, including a previously read story, receives a fresh AI price decision for the game. Retries of that same release do not apply its effect twice. Unrelated stories can leave the goal unchanged, and goals are limited to ±15% of the base price. The debug panel shows the current goal, AI queue, latest reason, and before/after values. Market events pause releases; releases also pause if 200 AI evaluations are outstanding. Outside market events and manual debug controls, goals stay fixed between news evaluations.
