@@ -1,7 +1,7 @@
 import sys
 from pathlib import Path
 
-from nicegui import ui
+from nicegui import app, ui
 
 SOURCE_ROOT = Path(__file__).resolve().parents[1]
 if str(SOURCE_ROOT) not in sys.path:
@@ -33,6 +33,7 @@ async def market():
 
 
 if __name__ in {'__main__', '__mp_main__'}:
+    app.on_startup(lambda: print('\n========== Stockgame: http://127.0.0.1:8080 ==========\n', flush=True))
     ui.run(
         title='Stockgame', favicon='📈', host='127.0.0.1', port=8080,
         reload=False, show=False, storage_secret=get_storage_secret(),

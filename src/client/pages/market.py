@@ -3,12 +3,16 @@ from nicegui import ui
 from api import MarketApiError, get_market, set_goal_price, set_market_event
 from charts import stock_chart
 from components import change_badge, header, metric, plot
-from portfolio import TradeError, apply_trade, portfolio_value
+from server.portfolio import TradeError, apply_trade, portfolio_value
 from server import config
 from server.sessions import load_user, save_progress
 
 
 async def market_page():
+    """Build the NiceGUI market from the API and saved session; polls quotes and news.
+
+    Side effects: renders UI and persists player actions. API failures show an unavailable state.
+    """
     user, saved = load_user()
     try:
         market = await get_market()
@@ -49,7 +53,10 @@ async def market_page():
     portfolio = dict(saved.get('portfolio', {}))
     watchlist = set(saved.get('watchlist', []))
     news_items = list(market['news'])
+    news_status = dict(market.get('news_status', {}))
     selected_news = {'article': None}
+    stock_rows = {}
+    no_matching_assets = None
     event = dict(market['event'])
     seen_event = {'id': 0, 'active': False}
     if not event['active']:
@@ -98,9 +105,20 @@ async def market_page():
         event.clear()
         event.update(latest['event'])
         show_event_popup()
+        latest_news_status = latest.get('news_status', {})
+        ai_status_changed = latest_news_status != news_status
+        news_status.clear()
+        news_status.update(latest_news_status)
         if latest['news'] != news_items:
             news_items[:] = latest['news']
             news_panel.refresh()
+            selected_article = selected_news['article']
+            if selected_article:
+                for article in news_items:
+                    if article.get('evaluation_id', article['id']) == selected_article.get('evaluation_id', selected_article['id']):
+                        selected_news['article'] = article
+                        news_dialog_content.refresh()
+                        break
         if config.DEBUG and event_changed:
             event_panel.refresh()
         prices_changed = False
@@ -109,13 +127,15 @@ async def market_page():
                 prices_changed = True
                 break
         if not prices_changed and not event_changed:
+            if config.DEBUG and ai_status_changed:
+                debug_panel.refresh()
             return
         for updated in latest['stocks']:
             stock = stock_by_symbol.get(updated['symbol'])
             if stock:
                 stock.update(updated)
                 prices[updated['symbol']] = updated['price']
-        stock_list.refresh()
+        update_stock_list()
         chart_panel.refresh()
         order_panel.refresh()
         watch_panel.refresh()
@@ -127,7 +147,7 @@ async def market_page():
     def select_stock(stock):
         state['stock'] = stock
         persist_progress()
-        stock_list.refresh()
+        update_stock_list()
         chart_panel.refresh()
         order_panel.refresh()
         position_panel.refresh()
@@ -136,37 +156,53 @@ async def market_page():
 
     def filter_stocks(value):
         state['search'] = value or ''
-        stock_list.refresh()
+        update_stock_list()
 
     def open_news(article):
         selected_news['article'] = article
         news_dialog_content.refresh()
         news_dialog.open()
 
-    @ui.refreshable
-    def stock_list():
+    def update_stock_list():
+        """Update existing NiceGUI rows from page state; preserves the list element and scroll position."""
         search_text = state['search'].lower()
-        matches = []
+        visible_count = 0
         for stock in stocks:
+            row, price_label, change_label = stock_rows[stock['symbol']]
             company_text = (stock['symbol'] + stock['name']).lower()
-            if search_text in company_text:
-                matches.append(stock)
+            visible = search_text in company_text
+            row.set_visibility(visible)
+            visible_count += visible
+            row.classes(add='active' if stock is state['stock'] else '',
+                        remove='' if stock is state['stock'] else 'active')
+            price_label.set_text(f"${stock['price']:,.2f}")
+            change_label.set_text(f"{stock['change']:+.2f}%")
+            positive = stock['change'] >= 0
+            change_label.classes(add='positive' if positive else 'negative',
+                                 remove='negative' if positive else 'positive')
+        no_matching_assets.set_visibility(visible_count == 0)
+
+    def stock_list():
+        """Build persistent NiceGUI stock rows once; stores references for later updates without rebuilding."""
+        nonlocal no_matching_assets
         with ui.column().classes('stock-list'):
-            for stock in matches:
+            for stock in stocks:
                 def choose_stock(stock=stock):
                     select_stock(stock)
 
                 row_class = 'stock-row'
                 if stock == state['stock']:
                     row_class += ' active'
-                with ui.element('button').classes(row_class).on('click', choose_stock):
+                with ui.element('button').classes(row_class).on('click', choose_stock) as row:
                     with ui.column().classes('stock-name'):
                         ui.label(stock['symbol']).classes('mono')
                         ui.label(stock['name']).classes('muted stock-subtitle')
-                    ui.label(f"${stock['price']:,.2f}").classes('mono stock-price')
-                    change_badge(stock['change'])
-            if not matches:
-                ui.label('No matching assets.').classes('muted empty-state')
+                    price_label = ui.label(f"${stock['price']:,.2f}").classes('mono stock-price')
+                    color = 'positive' if stock['change'] >= 0 else 'negative'
+                    change_label = ui.label(f"{stock['change']:+.2f}%").classes('change ' + color)
+                stock_rows[stock['symbol']] = (row, price_label, change_label)
+            no_matching_assets = ui.label('No matching assets.').classes('muted empty-state')
+        update_stock_list()
 
     @ui.refreshable
     def chart_panel():
@@ -338,6 +374,21 @@ async def market_page():
             debug_panel.refresh()
 
         with ui.column().classes('panel debug-panel'):
+            ui.label(f'Current {stock["symbol"]} goal: ${stock["goal_price"]:,.2f}').classes('mono yellow')
+            ui.label(news_status.get('ai', 'Waiting for news.')).classes('muted text-xs')
+            ui.label(f'Pending AI evaluations: {news_status.get("pending", 0)}').classes('muted text-xs')
+            reports = stock.get('news_reports', [])
+            if reports:
+                report = reports[0]
+                ui.label(f'Last AI evaluation: {report.get("checked_at", "Earlier")}').classes('caption')
+                ui.label(report['headline']).classes('text-xs')
+                if report.get('previous_goal') is not None and report.get('goal_price') is not None:
+                    ui.label(
+                        f'${report["previous_goal"]:,.2f} → ${report["goal_price"]:,.2f}'
+                    ).classes('mono')
+                ui.label(report['reason']).classes('muted text-xs')
+                if report.get('requested_goal') is not None and report['requested_goal'] != report.get('goal_price'):
+                    ui.label('Applied goal limited to ±15% of the base price.').classes('muted text-xs')
             target = ui.number(
                 label=f'{stock["symbol"]} goal price',
                 value=round(stock['goal_price'], 2),
@@ -396,6 +447,8 @@ async def market_page():
                     with ui.row().classes('news-meta'):
                         ui.label(article.get('symbol', '')).classes('yellow mono')
                         ui.label('• ' + article.get('age', '')).classes('muted')
+                        if article.get('previously_processed'):
+                            ui.label('• Previously read').classes('muted')
                     ui.label(article.get('headline', 'Untitled article'))
             if not news_items:
                 ui.label('Waiting for the first market update...').classes('muted empty-state')
@@ -421,6 +474,10 @@ async def market_page():
         ui.label(
             article.get('body') or 'No article text was provided by Yahoo Finance.'
         ).classes('news-dialog-body')
+        ui.label('AI evaluation').classes('caption')
+        ui.label(article.get('ai_reason') or f'AI {article.get("ai_status", "queued")}.').classes('muted text-xs')
+        if article.get('previous_goal') is not None and article.get('goal_price') is not None:
+            ui.label(f'Goal: ${article["previous_goal"]:,.2f} → ${article["goal_price"]:,.2f}').classes('mono')
         if article.get('url'):
             ui.link('READ ORIGINAL ARTICLE', article['url'], new_tab=True).classes(
                 'primary-button news-dialog-link'

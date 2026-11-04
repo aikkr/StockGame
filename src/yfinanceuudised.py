@@ -26,7 +26,7 @@ def get_recent_news(symbol):
     try:
         articles = yf.Ticker(symbol).news or []
     except Exception:
-        logging.warning('Yahoo news failed for %s; trying RSS.', symbol)
+        logging.getLogger(__name__).debug('Yahoo news failed for %s; trying RSS.', symbol, exc_info=True)
         articles = []
 
     news = []
